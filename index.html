@@ -351,7 +351,14 @@ input,select,textarea{font:inherit;color:var(--text)}
     <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
     <label>专业词表（可选，所有记录通用；每行一个：原文=中文）</label>
     <textarea id="glossary" placeholder="heteroskedasticity=异方差&#10;FDI=外商直接投资"></textarea>
-    <div style="margin-top:12px"><button class="btn" id="btnTest">测试翻译</button></div>
+    <label>语音识别方式</label>
+    <select id="asrEngine">
+      <option value="groq">Groq · Whisper（推荐：更准、整句不丢，iPad 必选）</option>
+      <option value="browser">浏览器自带（免费，iPad/iPhone 上容易漏句）</option>
+    </select>
+    <label>Groq Key（选 Groq 时填；console.groq.com 免费注册）</label>
+    <input id="asrKey" type="password" placeholder="gsk_..." autocomplete="off" spellcheck="false">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="btnTest">测试翻译</button><button class="btn" id="btnTestAsr">测试 Groq Key</button></div>
     <div class="test-out" id="testOut"></div>
     <div class="actions">
       <button class="btn" data-close="settingsMask">取消</button>
@@ -488,7 +495,7 @@ const PRESETS = {
 
 /* ================= 设置 ================= */
 const DEFAULTS = { preset:'deepseek', baseUrl:PRESETS.deepseek.baseUrl, model:PRESETS.deepseek.model, apiKey:'',
-  glossary:'', showSrc:true, fontSize:20, lastScene:'class', lastLang:{ class:'en-GB', anime:'ja-JP', chat:'en-GB' } };
+  glossary:'', asrEngine:'groq', asrKey:'', showSrc:true, fontSize:20, lastScene:'class', lastLang:{ class:'en-GB', anime:'ja-JP', chat:'en-GB' } };
 let settings = Object.assign({}, DEFAULTS, ls.get('lt_settings', {}));
 if (!settings.lastLang || typeof settings.lastLang !== 'object') settings.lastLang = Object.assign({}, DEFAULTS.lastLang);
 const saveSettings = () => ls.set('lt_settings', settings);
@@ -813,8 +820,8 @@ function pump(){
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, wantRun = false, interim = '', flushTimer = null, lastFinal = '', wakeLock = null, recRestarts = 0;
 
-function addFinal(text){
-  const s = getS(recId); if (!s) return;
+function addFinal(text, sid){
+  const s = getS(sid || recId); if (!s) return;
   text = (text || '').replace(/\s+/g, ' ').trim();
   if (!text || text === lastFinal) return;
   lastFinal = text;
@@ -861,10 +868,98 @@ function startRec(){
   };
   try{ rec.start(); }catch(e){ setTimeout(startRec, 600); }
 }
+/* ---------- Groq Whisper 识别：麦克风一直录，停顿时整段送去识别（iPad 上比浏览器自带识别稳定得多） ---------- */
+function useWhisper(){ return settings.asrEngine === 'groq' && !!(settings.asrKey || '').trim(); }
+let wMic = null, wAc = null, wProc = null, wSrc = null, wSeg = null, wSid = null, wChain = Promise.resolve(), wPending = 0;
+const VADP = { class:{ endSil:700, minLen:3000, hardSil:1500, maxLen:15000 }, chat:{ endSil:600, minLen:2000, hardSil:1200, maxLen:10000 }, anime:{ endSil:500, minLen:1500, hardSil:1100, maxLen:5000 } };
+function startWhisper(sid){
+  wSid = sid;
+  try{ wAc = new (window.AudioContext || window.webkitAudioContext)(); wAc.resume && wAc.resume(); }catch(e){}
+  navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } }).then(stream => {
+    if (!wantRun || recId !== sid){ stream.getTracks().forEach(t => t.stop()); return; }
+    wMic = stream;
+    const s = getS(sid); const P = VADP[(s && s.scene) || 'class'] || VADP.class;
+    wSrc = wAc.createMediaStreamSource(stream);
+    wProc = wAc.createScriptProcessor(4096, 1, 1);
+    const ratio = wAc.sampleRate / 16000; let pre = [], silent = 0, speech = 0, noise = 0.003;
+    wProc.onaudioprocess = e => {
+      const x = e.inputBuffer.getChannelData(0);
+      const n = Math.floor(x.length / ratio), y = new Float32Array(n);
+      for (let i = 0; i < n; i++){ let a = Math.floor(i * ratio), b = Math.min(x.length, Math.floor((i + 1) * ratio)), t = 0, c = 0; for (let j = a; j < b; j++){ t += x[j]; c++; } y[i] = c ? t / c : 0; }
+      let rms = 0; for (let i = 0; i < n; i++) rms += y[i] * y[i]; rms = Math.sqrt(rms / (n || 1));
+      const ms = n / 16, speaking = rms > Math.max(0.008, noise * 2.5);
+      if (!wSeg){
+        if (!speaking) noise = noise * 0.95 + rms * 0.05;
+        pre.push(y); if (pre.length > 4) pre.shift();
+        if (speaking){ wSeg = pre; pre = []; silent = 0; speech = ms; }
+      } else {
+        wSeg.push(y);
+        if (speaking){ silent = 0; speech += ms; } else silent += ms;
+        const total = wSeg.reduce((t, b) => t + b.length, 0) / 16;
+        setInterim('🎙 正在听… ' + Math.round(total / 1000) + ' 秒');
+        if ((silent >= P.endSil && total >= P.minLen) || silent >= P.hardSil || total >= P.maxLen){ const d = wSeg; wSeg = null; flushWhisper(d, speech); }
+      }
+    };
+    wSrc.connect(wProc); wProc.connect(wAc.destination);
+    setInterim('🎙 正在听…');
+  }, err => { stopRec(); toast('没有麦克风权限：iPad 设置 → Safari → 麦克风 → 允许', 5000); });
+}
+function stopWhisper(){
+  if (wSeg){ const d = wSeg; wSeg = null; flushWhisper(d, 1000); }
+  try{ wProc && wProc.disconnect(); wSrc && wSrc.disconnect(); }catch(e){}
+  try{ wMic && wMic.getTracks().forEach(t => t.stop()); }catch(e){}
+  try{ wAc && wAc.close(); }catch(e){}
+  wMic = wAc = wProc = wSrc = null;
+}
+function wavOf(chunks){
+  let len = 0; chunks.forEach(c => len += c.length);
+  const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf), w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4, 36 + len * 2, true); w(8,'WAVE'); w(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,16000,true); v.setUint32(28,32000,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,'data'); v.setUint32(40, len * 2, true);
+  let o = 44; chunks.forEach(c => { for (let i = 0; i < c.length; i++, o += 2){ const q = Math.max(-1, Math.min(1, c[i])); v.setInt16(o, q < 0 ? q * 0x8000 : q * 0x7fff, true); } });
+  return buf;
+}
+const HALLU = /thank you for watching|thanks for watching|please subscribe|like and subscribe|subtitles by|ご視聴ありがとうございました|チャンネル登録/i;
+function flushWhisper(chunks, speechMs){
+  if (speechMs < 300) return;
+  const sid = wSid, s = getS(sid); if (!s) return;
+  const wav = wavOf(chunks); wPending++;
+  if (recId === sid) setInterim('⏳ 识别中…');
+  wChain = wChain.then(() => groqTranscribe(wav, s)).then(text => {
+    wPending--;
+    text = (text || '').trim();
+    if (text && !HALLU.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) addFinal(text, sid);
+    if (recId === sid && !wSeg) setInterim(wPending ? '⏳ 识别中…' : '🎙 正在听…');
+  }, e => {
+    wPending--;
+    toast('识别失败：' + (/401/.test(e.message) ? 'Groq Key 不对' : /429/.test(e.message) ? '请求太频繁，几秒后自动恢复' : /Failed to fetch|Load failed/i.test(e.message) ? '连不上 Groq（检查网络）' : e.message), 3500);
+  });
+}
+async function groqTranscribe(wav, s){
+  const fd = new FormData();
+  fd.append('file', new Blob([wav], { type:'audio/wav' }), 'audio.wav');
+  fd.append('model', 'whisper-large-v3-turbo');
+  fd.append('language', (s.lang || 'en').slice(0, 2));
+  fd.append('temperature', '0');
+  // 把课程名和术语表交给 Whisper，帮助它认对专业词
+  const terms = (settings.glossary || '').split('\n').map(l => l.split('=')[0].trim()).filter(Boolean).join(', ');
+  const hint = [s.topic, terms].filter(Boolean).join('. ').slice(0, 400);
+  if (hint) fd.append('prompt', hint);
+  const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + settings.asrKey.trim() }, body: fd });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (await r.json()).text || '';
+}
+
 async function keepAwake(){ try{ if ('wakeLock' in navigator && wantRun) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
 
 function startRec4(id){
+  if (useWhisper()){
+    if (!settings.apiKey.trim()){ toast('先在设置里填好 API Key'); openSettings(); return; }
+    if (recId && recId !== id) stopRec();
+    recId = id; wantRun = true; lastFinal = ''; interim = '';
+    startWhisper(id); keepAwake(); renderSide(); renderMain(); return;
+  }
   if (!SR){ toast('这个浏览器不支持语音识别。电脑用 Chrome / Edge / Safari，iPhone/iPad 用 Safari，安卓用 Chrome', 5000); return; }
   if (!settings.apiKey.trim()){ toast('先在设置里填好 API Key'); openSettings(); return; }
   if (recId && recId !== id) stopRec();
@@ -876,6 +971,7 @@ function stopRec(){
   wantRun = false; clearTimeout(flushTimer);
   const was = recId;
   if (rec){ try{ rec.stop(); }catch(e){} }
+  stopWhisper();
   // onend 可能稍后才触发：先把未定稿的内容存下
   if (interim){ addFinal(interim); setInterim(''); }
   try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock = null;
@@ -1119,7 +1215,7 @@ $('mDelete').onclick = async () => {
 };
 
 /* ================= 设置 ================= */
-const SF = ['baseUrl','model','apiKey','glossary'];
+const SF = ['baseUrl','model','apiKey','glossary','asrEngine','asrKey'];
 function openSettings(){
   closeSide(); $('preset').value = settings.preset; SF.forEach(f => $(f).value = settings[f] || '');
   $('testOut').textContent = ''; openMask('settingsMask');
@@ -1141,6 +1237,18 @@ $('btnTest').onclick = async () => {
     if (!r) throw new Error('没有返回译文');
   }catch(e){ out.style.color = 'var(--rec)'; out.textContent = '❌ ' + friendlyErr(e); }
   finally{ settings = backup; }
+};
+
+$('btnTestAsr').onclick = async () => {
+  const k = $('asrKey').value.trim(), out = $('testOut'); out.style.color = '';
+  if (!k){ out.style.color = 'var(--rec)'; out.textContent = '❌ 还没填 Groq Key'; return; }
+  out.textContent = '测试中…';
+  try{
+    const fd = new FormData(); fd.append('file', new Blob([wavOf([new Float32Array(16000)])], { type:'audio/wav' }), 'a.wav'); fd.append('model', 'whisper-large-v3-turbo');
+    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + k }, body: fd });
+    if (!r.ok) throw new Error('HTTP ' + r.status + (r.status === 401 ? '：Key 不对' : ''));
+    out.style.color = 'var(--ok)'; out.textContent = '✅ Groq Key 可以用。识别方式选“Groq · Whisper”，再点保存。';
+  }catch(e){ out.style.color = 'var(--rec)'; out.textContent = '❌ ' + (/Failed to fetch|Load failed/i.test(e.message) ? '连不上 Groq（网络问题，或该服务不允许网页直连）' : e.message); }
 };
 
 /* ================= 备份 / 恢复 ================= */
