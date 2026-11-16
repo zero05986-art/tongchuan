@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="实时同传">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<title>实时同传 · 听课、看番、复习</title>
+<style>
+:root{
+  --bg:#f5f6f8; --side:#fbfbfc; --card:#ffffff; --text:#14161a; --muted:#6b7280; --faint:#9aa1ab;
+  --line:#e7e8ec; --accent:#4f46e5; --accent-soft:#eef0ff; --accent-text:#ffffff;
+  --rec:#e5484d; --ok:#16a34a; --warn:#d97706;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 6px 24px rgba(16,24,40,.08);
+  --zh-size:20px; --radius:14px;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0f1115; --side:#13161b; --card:#181b21; --text:#e9ebef; --muted:#959ca8; --faint:#6b7280;
+    --line:#262a32; --accent:#8b8cf8; --accent-soft:#22234a; --accent-text:#0f1115;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px rgba(0,0,0,.45); }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",Roboto,sans-serif;
+  -webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+input,select,textarea{font:inherit;color:var(--text)}
+.app{display:grid;grid-template-columns:290px 1fr;height:100vh;height:100dvh}
+
+/* ---------- 侧栏 ---------- */
+.side{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;
+  padding-top:env(safe-area-inset-top)}
+.brand{display:flex;align-items:center;gap:10px;padding:18px 18px 12px}
+.logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#a855f7);display:grid;place-items:center;color:#fff;font-weight:700;font-size:15px}
+.brand b{font-size:16px}
+.brand small{display:block;color:var(--muted);font-size:12px;margin-top:1px}
+.new-btn{margin:4px 14px 10px;padding:11px;border-radius:12px;background:var(--accent);color:var(--accent-text);font-weight:600;display:flex;gap:6px;align-items:center;justify-content:center}
+.new-btn:active{transform:scale(.98)}
+.search{margin:0 14px 8px;position:relative}
+.search input{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--line);background:var(--card);font-size:14px;outline:none}
+.search input:focus{border-color:var(--accent)}
+.search span{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--faint);font-size:13px}
+.sess-list{flex:1;overflow-y:auto;padding:4px 8px 10px;-webkit-overflow-scrolling:touch}
+.group{font-size:12px;color:var(--faint);padding:12px 10px 6px;font-weight:600;letter-spacing:.02em}
+.sess{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;padding:10px;border-radius:11px;margin-bottom:2px}
+.sess:hover{background:var(--accent-soft)}
+.sess.active{background:var(--accent-soft)}
+.sess .em{font-size:18px;line-height:22px;flex:none}
+.sess .tt{font-size:14px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess .mm{font-size:12px;color:var(--muted);margin-top:2px;display:flex;gap:6px;align-items:center}
+.sess .body{min-width:0;flex:1}
+.sess .recdot{width:7px;height:7px;border-radius:50%;background:var(--rec);animation:pulse 1.4s infinite}
+.side-empty{color:var(--faint);font-size:13px;text-align:center;padding:30px 16px;line-height:1.7}
+.side-foot{border-top:1px solid var(--line);padding:10px 10px calc(10px + env(safe-area-inset-bottom));display:flex;gap:6px}
+.side-foot button{flex:1;padding:9px 4px;border-radius:10px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+.side-foot button:hover{background:var(--accent-soft);color:var(--text)}
+
+/* ---------- 主区 ---------- */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;position:relative;padding-top:env(safe-area-inset-top)}
+.topbar{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--bg);min-height:62px}
+.menu-btn{display:none;width:36px;height:36px;border-radius:10px;font-size:18px}
+.menu-btn:hover,.icon-btn:hover{background:var(--accent-soft)}
+.head{flex:1;min-width:0}
+.title{font-size:17px;font-weight:650;margin:0;outline:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:6px;padding:1px 4px;margin-left:-4px}
+.title[contenteditable="true"]{white-space:normal;background:var(--card);box-shadow:0 0 0 2px var(--accent)}
+.meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.chip{font-size:11.5px;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:2px 8px;white-space:nowrap}
+.chip.rec{color:var(--rec);border-color:color-mix(in srgb,var(--rec) 35%,transparent)}
+.icon-btn{width:36px;height:36px;border-radius:10px;font-size:17px;display:grid;place-items:center;flex:none}
+.tabs{display:flex;gap:4px;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:3px;flex:none}
+.tabs button{padding:6px 12px;border-radius:8px;font-size:13.5px;color:var(--muted);white-space:nowrap}
+.tabs button.on{background:var(--accent-soft);color:var(--text);font-weight:600}
+.panel{flex:1;overflow-y:auto;min-height:0;-webkit-overflow-scrolling:touch}
+.inner{max-width:860px;margin:0 auto;padding:18px 20px 150px}
+
+/* 欢迎页 */
+.welcome{max-width:760px;margin:0 auto;padding:7vh 22px 60px}
+.welcome h2{font-size:28px;margin:0 0 8px;letter-spacing:-.01em}
+.welcome p.lead{color:var(--muted);margin:0 0 26px;line-height:1.7}
+.scene-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.scard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;text-align:left;box-shadow:var(--shadow);transition:transform .12s,border-color .12s}
+.scard:hover{transform:translateY(-2px);border-color:var(--accent)}
+.scard .e{font-size:28px}
+.scard b{display:block;margin:10px 0 4px;font-size:15.5px}
+.scard span{color:var(--muted);font-size:13px;line-height:1.55}
+.tips{margin-top:28px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;font-size:13.5px;color:var(--muted);line-height:1.8}
+.tips b{color:var(--text)}
+.warn-box{margin-top:14px;padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--text);font-size:13.5px;line-height:1.6}
+
+/* 字幕 */
+.seg{display:grid;grid-template-columns:46px 1fr;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}
+.seg .tm{font-size:11.5px;color:var(--faint);padding-top:3px;font-variant-numeric:tabular-nums}
+.seg .src{font-size:calc(var(--zh-size)*.68);color:var(--muted);line-height:1.55;margin-bottom:3px}
+.seg .zh{font-size:var(--zh-size);line-height:1.62}
+.seg .zh.pending{color:var(--faint)}
+.seg .zh.err{color:var(--rec);font-size:14px;cursor:pointer}
+.hide-src .seg .src{display:none}
+.live{display:grid;grid-template-columns:46px 1fr;gap:10px;padding:12px 0;color:var(--accent);font-size:calc(var(--zh-size)*.72);line-height:1.55}
+.live .tm{font-size:11.5px;padding-top:3px}
+.subs-empty{text-align:center;color:var(--muted);padding:12vh 10px;line-height:1.9}
+.subs-empty .big{font-size:40px}
+
+/* 总结 & 问答 */
+.md{line-height:1.8;font-size:15.5px}
+.md h2{font-size:18px;margin:26px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.md h2:first-child{margin-top:4px}
+.md h3{font-size:16px;margin:18px 0 6px}
+.md h4,.md h5{font-size:15px;margin:14px 0 4px}
+.md p{margin:6px 0}
+.md ul,.md ol{margin:6px 0;padding-left:22px}
+.md li{margin:3px 0}
+.md code{background:var(--accent-soft);padding:1px 5px;border-radius:5px;font-size:.9em}
+.md blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid var(--accent);color:var(--muted);background:var(--card);border-radius:0 8px 8px 0}
+.md strong{font-weight:650}
+.sum-empty{text-align:center;padding:9vh 10px;color:var(--muted);line-height:1.8}
+.sum-empty .big{font-size:40px}
+.sum-tools{display:flex;gap:8px;justify-content:flex-end;margin-bottom:10px;flex-wrap:wrap}
+.btn{padding:9px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);font-size:14px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-text);border-color:transparent;font-weight:600}
+.btn.danger{color:var(--rec)}
+.btn:disabled{opacity:.5;cursor:default}
+.progress{font-size:13px;color:var(--muted);margin:6px 0 14px}
+.qa-item{margin:14px 0}
+.bubble{padding:11px 14px;border-radius:14px;line-height:1.7;font-size:15px;max-width:88%}
+.bubble.q{background:var(--accent);color:var(--accent-text);margin-left:auto;border-bottom-right-radius:4px;white-space:pre-wrap}
+.bubble.a{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:4px}
+.qa-suggest{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.qa-suggest button{font-size:13px;padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--muted)}
+.qa-suggest button:hover{border-color:var(--accent);color:var(--text)}
+
+/* 底部操作栏 */
+.dock{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom));
+  display:flex;gap:6px;align-items:center;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);
+  padding:6px;border-radius:18px;z-index:4;max-width:calc(100% - 24px)}
+.dock .ib{width:42px;height:42px;border-radius:12px;font-size:14px;font-weight:600;color:var(--muted)}
+.dock .ib:hover{background:var(--accent-soft);color:var(--text)}
+.dock .rec-btn{height:46px;padding:0 22px;border-radius:13px;background:var(--accent);color:var(--accent-text);font-weight:650;font-size:15.5px;display:flex;gap:8px;align-items:center;white-space:nowrap}
+.dock .rec-btn.on{background:var(--rec);color:#fff}
+.dock .end-btn{height:46px;padding:0 16px;border-radius:13px;border:1px solid var(--line);font-weight:600;font-size:14.5px;white-space:nowrap}
+.qa-dock{position:absolute;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 30%)}
+.qa-box{max-width:820px;margin:0 auto;display:flex;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:6px;box-shadow:var(--shadow)}
+.qa-box textarea{flex:1;border:0;background:transparent;resize:none;outline:none;padding:9px 10px;font-size:15px;max-height:120px}
+.qa-box button{padding:0 16px;border-radius:11px;background:var(--accent);color:var(--accent-text);font-weight:600}
+.jump{position:absolute;right:18px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:4;display:none;
+  background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);padding:8px 12px;border-radius:999px;font-size:13px}
+.jump.show{display:block}
+.rec-pill{position:absolute;top:calc(74px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:6;display:none;
+  background:var(--rec);color:#fff;padding:7px 14px;border-radius:999px;font-size:13px;box-shadow:var(--shadow);white-space:nowrap}
+.rec-pill.show{display:block}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor}
+.rec-btn.on .dot,.rec-pill .dot{animation:pulse 1.4s infinite}
+@keyframes pulse{50%{opacity:.3}}
+
+/* 弹窗 */
+.mask{position:fixed;inset:0;background:rgba(10,12,16,.45);display:none;z-index:30;align-items:center;justify-content:center;padding:16px;
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.mask.show{display:flex}
+.sheet{background:var(--card);width:100%;max-width:540px;max-height:90vh;overflow-y:auto;border-radius:20px;padding:22px;box-shadow:var(--shadow)}
+.sheet h3{margin:0 0 4px;font-size:19px}
+.sheet .hint{font-size:13px;color:var(--muted);line-height:1.65;margin:0 0 8px}
+.sheet label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:550}
+.sheet input,.sheet select,.sheet textarea{width:100%;font-size:15px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:10px 12px;outline:none}
+.sheet input:focus,.sheet select:focus,.sheet textarea:focus{border-color:var(--accent)}
+.sheet textarea{min-height:76px;resize:vertical}
+.seg-pick{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.seg-pick button{border:1.5px solid var(--line);border-radius:12px;padding:12px 6px;text-align:center;font-size:13.5px;background:var(--bg)}
+.seg-pick button .e{display:block;font-size:22px;margin-bottom:4px}
+.seg-pick button.on{border-color:var(--accent);background:var(--accent-soft);font-weight:600}
+.actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap}
+.test-out{font-size:13px;margin-top:10px;line-height:1.6;white-space:pre-wrap}
+.divider{height:1px;background:var(--line);margin:20px 0 4px}
+.menu-list{max-width:360px;padding:10px}
+.menu-list button{display:flex;gap:10px;width:100%;text-align:left;padding:12px 14px;border-radius:11px;font-size:15px}
+.menu-list button:hover{background:var(--accent-soft)}
+.menu-list button.danger{color:var(--rec)}
+.steps{padding-left:20px;margin:10px 0;line-height:1.75;font-size:14.5px}
+.steps li{margin:8px 0}
+.bm-wrap{margin:12px 0 8px}
+.bm-link{display:inline-block;padding:10px 18px;border-radius:12px;background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff;font-weight:700;text-decoration:none;cursor:grab;box-shadow:var(--shadow)}
+.chk{display:flex!important;gap:8px;align-items:flex-start;font-weight:400!important;line-height:1.5}
+.chk input{width:auto!important;margin-top:3px}
+.bm-note{font-size:13px;color:var(--warn);margin-top:6px}
+.toast{position:fixed;left:50%;top:calc(18px + env(safe-area-inset-top));transform:translateX(-50%) translateY(-8px);background:var(--text);color:var(--bg);
+  padding:10px 16px;border-radius:12px;font-size:14px;z-index:50;opacity:0;transition:.2s;pointer-events:none;max-width:90vw;text-align:center;line-height:1.5}
+.toast.show{opacity:.96;transform:translateX(-50%) translateY(0)}
+.scrim{display:none}
+
+/* ---------- 手机/平板竖屏 ---------- */
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{position:fixed;inset:0 auto 0 0;width:300px;max-width:86vw;z-index:20;transform:translateX(-102%);transition:transform .22s;box-shadow:var(--shadow)}
+  .side.open{transform:none}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:19}
+  .scrim.show{display:block}
+  .menu-btn{display:grid;place-items:center}
+  .topbar{flex-wrap:wrap;padding:10px 12px}
+  .tabs{order:5;width:100%}
+  .tabs button{flex:1}
+  .inner{padding:14px 14px 150px}
+  .scene-cards{grid-template-columns:1fr}
+  .welcome{padding-top:4vh}
+  .welcome h2{font-size:24px}
+  .rec-pill{top:calc(110px + env(safe-area-inset-top))}
+  .seg{grid-template-columns:38px 1fr;gap:8px}
+  .live{grid-template-columns:38px 1fr;gap:8px}
+}
+@media (max-width:420px){ .dock .end-btn{padding:0 12px} .dock .rec-btn{padding:0 16px} }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 侧栏：记录列表 -->
+  <aside class="side" id="side">
+    <div class="brand">
+      <div class="logo">译</div>
+      <div><b>实时同传</b><small>听课 · 看番 · 复习</small></div>
+    </div>
+    <button class="new-btn" id="btnNew">＋ 新建记录</button>
+    <div class="search"><span>⌕</span><input id="search" placeholder="搜索标题或字幕内容" autocomplete="off"></div>
+    <div class="sess-list" id="sessList"></div>
+    <div class="side-foot">
+      <button id="btnSettings">⚙︎ 设置</button>
+      <button id="btnOverlay">🎬 网页字幕</button>
+      <button id="btnBackup">⇩ 备份/恢复</button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- 主区 -->
+  <section class="main">
+    <div class="topbar" id="topbar">
+      <button class="menu-btn" id="btnSide" aria-label="记录列表">☰</button>
+      <div class="head">
+        <h1 class="title" id="title">实时同传</h1>
+        <div class="meta" id="meta"></div>
+      </div>
+      <div class="tabs" id="tabs" style="display:none">
+        <button data-tab="subs" class="on">字幕</button>
+        <button data-tab="sum">总结笔记</button>
+        <button data-tab="qa">提问</button>
+      </div>
+      <button class="icon-btn" id="btnMore" style="display:none" aria-label="更多">⋯</button>
+    </div>
+
+    <div class="rec-pill" id="recPill"><span class="dot"></span>&nbsp; 正在记录：<span id="recPillName"></span> · 点此返回</div>
+
+    <!-- 欢迎页 -->
+    <div class="panel" id="pWelcome">
+      <div class="welcome">
+        <h2>想听懂什么？</h2>
+        <p class="lead">外语实时转成自然的中文字幕。每次都会自动保存成一条记录，结束后可以一键生成复习笔记，还能针对内容提问。</p>
+        <div class="scene-cards">
+          <button class="scard" data-scene="class"><div class="e">🎓</div><b>上课 / 讲座</b><span>老师讲课的口吻，专业术语后面括注英文，课后可生成复习笔记</span></button>
+          <button class="scard" data-scene="anime"><div class="e">🎬</div><b>看动漫 / 影视</b><span>按字幕组风格翻译，保留语气，日语、韩语、英语都能听</span></button>
+          <button class="scard" data-scene="chat"><div class="e">💬</div><b>日常对话 / 会议</b><span>口语化意译，自动略过口头禅，结束后整理要点</span></button>
+        </div>
+        <div class="warn-box" id="noKeyBox" style="display:none">还没设置翻译服务。点左下角 <b>⚙︎ 设置</b>，填上 API Key（推荐用 DeepSeek）。</div>
+        <div class="warn-box" id="noSRBox" style="display:none">这个浏览器不支持语音识别，只能查看旧记录。电脑请用 Chrome、Edge 或 Safari，iPhone/iPad 用 Safari，安卓用 Chrome。</div>
+        <div class="tips">
+          <b>小贴士</b><br>
+          · 设备要放在能听清声音的位置。看番时用外放，或者用另一台设备来听。<br>
+          · <b>电脑上用 Chrome 看番？</b>用左下角“🎬 网页字幕”装一个书签按钮，直接识别视频声音，戴耳机也能用。<br>
+          · 记录保存在这台设备的浏览器里，换设备不会同步。可以在“备份/恢复”里导出再导入。<br>
+          · iPhone/iPad 建议“添加到主屏幕”使用，Safari 才不会自动清掉旧记录。
+        </div>
+      </div>
+    </div>
+
+    <!-- 字幕 -->
+    <div class="panel" id="pSubs" style="display:none">
+      <div class="inner" id="subsInner">
+        <div id="segList"></div>
+        <div class="live" id="live" style="display:none"><span class="tm">●</span><span id="liveText"></span></div>
+        <div class="subs-empty" id="subsEmpty"><div class="big">🎙</div>点下面的 <b>开始记录</b>，字幕会出现在这里</div>
+      </div>
+    </div>
+
+    <!-- 总结 -->
+    <div class="panel" id="pSum" style="display:none">
+      <div class="inner" id="sumInner"></div>
+    </div>
+
+    <!-- 提问 -->
+    <div class="panel" id="pQA" style="display:none">
+      <div class="inner" id="qaInner"></div>
+    </div>
+    <div class="qa-dock" id="qaDock" style="display:none">
+      <div class="qa-box">
+        <textarea id="qaInput" rows="1" placeholder="关于这次内容，想问什么？"></textarea>
+        <button id="qaSend">发送</button>
+      </div>
+    </div>
+
+    <button class="jump" id="jump">↓ 回到最新</button>
+
+    <div class="dock" id="dock" style="display:none">
+      <button class="ib" id="fontDown" title="字号变小">A−</button>
+      <button class="rec-btn" id="btnRec"><span class="dot"></span><span id="btnRecText">开始记录</span></button>
+      <button class="end-btn" id="btnEnd" style="display:none">结束并总结</button>
+      <button class="ib" id="fontUp" title="字号变大">A+</button>
+    </div>
+  </section>
+</div>
+
+<!-- 新建记录 -->
+<div class="mask" id="newMask">
+  <div class="sheet">
+    <h3>新建记录</h3>
+    <p class="hint">选好场景和语言，点开始后就会边听边翻译、边自动保存。</p>
+    <label>场景</label>
+    <div class="seg-pick" id="scenePick">
+      <button data-scene="class"><span class="e">🎓</span>上课</button>
+      <button data-scene="anime"><span class="e">🎬</span>看番 / 影视</button>
+      <button data-scene="chat"><span class="e">💬</span>对话</button>
+    </div>
+    <label>说的是什么语言</label>
+    <select id="newLang"></select>
+    <label id="topicLabel">课程名称 / 内容</label>
+    <input id="newTopic" placeholder="">
+    <div class="actions">
+      <button class="btn" data-close="newMask">取消</button>
+      <button class="btn primary" id="btnCreate">开始</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置 -->
+<div class="mask" id="settingsMask">
+  <div class="sheet">
+    <h3>设置</h3>
+    <p class="hint">API Key 只保存在这台设备的浏览器里。每台设备都要各填一次。</p>
+    <label>翻译服务</label>
+    <select id="preset">
+      <option value="deepseek">DeepSeek（推荐：便宜，中文自然）</option>
+      <option value="siliconflow">硅基流动（Qwen 等国产模型）</option>
+      <option value="openai">OpenAI</option>
+      <option value="custom">自定义（兼容 OpenAI 格式）</option>
+    </select>
+    <label>接口地址</label>
+    <input id="baseUrl" autocomplete="off" spellcheck="false">
+    <label>模型名</label>
+    <input id="model" autocomplete="off" spellcheck="false">
+    <label>API Key</label>
+    <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+    <label>专业词表（可选，所有记录通用；每行一个：原文=中文）</label>
+    <textarea id="glossary" placeholder="heteroskedasticity=异方差&#10;FDI=外商直接投资"></textarea>
+    <div style="margin-top:12px"><button class="btn" id="btnTest">测试翻译</button></div>
+    <div class="test-out" id="testOut"></div>
+    <div class="actions">
+      <button class="btn" data-close="settingsMask">取消</button>
+      <button class="btn primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 网页字幕书签 -->
+<div class="mask" id="overlayMask">
+  <div class="sheet">
+    <h3>🎬 看番字幕按钮（电脑版 Chrome / Edge）</h3>
+    <p class="hint">装好以后，在任何正在放视频的网页上点一下，就能直接识别视频里的声音，在画面下方显示中文字幕。不用麦克风，戴耳机也行，全屏时也能显示。</p>
+    <ol class="steps">
+      <li>先把书签栏显示出来：Mac 按 <b>⌘ + Shift + B</b>，Windows 按 <b>Ctrl + Shift + B</b>。</li>
+      <li>用鼠标把下面这个按钮<b>拖到书签栏上</b>，然后松开：
+        <div class="bm-wrap"><a id="bmLink" class="bm-link" href="#" draggable="true">🎬 看番字幕</a></div>
+        <label class="chk"><input type="checkbox" id="bmWithKey" checked> 按钮里带上我的 API Key（在任何网站都不用再填；不要把这个书签分享给别人）</label>
+        <div class="bm-note" id="bmNoKey" style="display:none">还没在“设置”里填 API Key，装好后需要在每个网站的面板里点 ⚙ 填一次。</div>
+      </li>
+      <li>打开视频网页，先让视频<b>开始播放</b>，再点书签栏上的「看番字幕」。右下角会出现控制面板，点<b>开始</b>。</li>
+    </ol>
+    <p class="hint">面板按钮：开始/暂停 · 切换语言（日语→韩语→英语→中文） · 原文显示开关 · A−/A+ 字号 · ⚙ 设置 · ✕ 关闭。再点一次书签可以隐藏或显示面板。</p>
+    <p class="hint">拖不动？点“复制按钮代码”，然后在书签栏上右键 →“添加网页”，名称填“看番字幕”，网址那一栏粘贴进去，保存即可。</p>
+    <p class="hint">说明：视频放在别的网站的内嵌播放器里，或者有版权加密时，可能拿不到声音，状态栏会提示；这时可以改用本 App 的麦克风模式（电脑外放）。改了 API Key 以后要重新拖一次按钮。</p>
+    <div class="actions">
+      <button class="btn" id="bmCopy">复制按钮代码</button>
+      <button class="btn primary" data-close="overlayMask">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 备份 -->
+<div class="mask" id="backupMask">
+  <div class="sheet">
+    <h3>备份与恢复</h3>
+    <p class="hint">记录只存在这台设备上。可以导出一个备份文件，然后在别的设备上导入；导入时会合并，不会覆盖已有的记录。</p>
+    <div class="actions" style="justify-content:flex-start">
+      <button class="btn primary" id="btnExportAll">导出全部记录</button>
+      <button class="btn" id="btnImport">导入备份文件</button>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none">
+    </div>
+    <p class="hint" id="storageInfo" style="margin-top:14px"></p>
+    <div class="actions"><button class="btn" data-close="backupMask">关闭</button></div>
+  </div>
+</div>
+
+<!-- 记录菜单 -->
+<div class="mask" id="moreMask">
+  <div class="sheet menu-list">
+    <button id="mRename">✎ 重命名</button>
+    <button id="mToggleSrc">👁 隐藏原文</button>
+    <button id="mRetry">↻ 重试翻译失败的句子</button>
+    <button id="mCopy">⧉ 复制全部字幕</button>
+    <button id="mTxt">⇩ 下载字幕 (.txt)</button>
+    <button id="mMd">⇩ 下载笔记+字幕 (.md)</button>
+    <button id="mDelete" class="danger">🗑 删除这条记录</button>
+  </div>
+</div>
+
+<!-- 确认框 -->
+<div class="mask" id="confirmMask">
+  <div class="sheet" style="max-width:400px">
+    <h3 id="confirmTitle">确定？</h3>
+    <p class="hint" id="confirmText"></p>
+    <div class="actions">
+      <button class="btn" id="confirmNo">取消</button>
+      <button class="btn primary" id="confirmYes">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ================= 基础 ================= */
+const $ = id => document.getElementById(id);
+const ls = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } },
+  del(k){ try{ localStorage.removeItem(k); }catch(e){} }
+};
+function toast(msg, ms = 2400){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms);
+}
+function esc(t){ return String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const pad = n => String(n).padStart(2, '0');
+const hm = t => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+const WEEK = ['日','一','二','三','四','五','六'];
+const dateLabel = t => { const d = new Date(t); return (d.getMonth()+1) + '月' + d.getDate() + '日 周' + WEEK[d.getDay()]; };
+function openMask(id){ $(id).classList.add('show'); }
+function closeMask(id){ $(id).classList.remove('show'); }
+document.querySelectorAll('.mask').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.classList.remove('show'); }));
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => closeMask(b.dataset.close));
+function confirmBox(title, text, yes = '确定'){
+  return new Promise(res => {
+    $('confirmTitle').textContent = title; $('confirmText').textContent = text; $('confirmYes').textContent = yes;
+    openMask('confirmMask');
+    $('confirmYes').onclick = () => { closeMask('confirmMask'); res(true); };
+    $('confirmNo').onclick = () => { closeMask('confirmMask'); res(false); };
+  });
+}
+function download(name, text, type = 'text/plain'){
+  const blob = new Blob([text], { type: type + ';charset=utf-8' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+const safeName = s => (s || '记录').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 60);
+
+/* ================= 常量 ================= */
+const SCENES = {
+  class: { em:'🎓', name:'上课', topicLabel:'课程名称 / 内容', topicPh:'例如：Quantitative Methods，回归分析' },
+  anime: { em:'🎬', name:'看番', topicLabel:'作品名称（可选）', topicPh:'例如：葬送的芙莉莲 第 5 集' },
+  chat:  { em:'💬', name:'对话', topicLabel:'主题（可选）', topicPh:'例如：小组作业讨论' }
+};
+const LANGS = [
+  ['en-GB','英语 · 英式'],['en-US','英语 · 美式'],['en-AU','英语 · 澳式'],['en-IN','英语 · 印度'],
+  ['ja-JP','日语'],['ko-KR','韩语'],['fr-FR','法语'],['de-DE','德语'],['es-ES','西班牙语']
+];
+const LANG_NAMES = { en:'英语', ja:'日语', ko:'韩语', fr:'法语', de:'德语', es:'西班牙语' };
+const langName = l => LANG_NAMES[(l || 'en').slice(0, 2)] || '外语';
+const isCJK = l => /^(ja|ko|zh)/.test(l || '');
+const PRESETS = {
+  deepseek:    { baseUrl:'https://api.deepseek.com',      model:'deepseek-chat' },
+  siliconflow: { baseUrl:'https://api.siliconflow.cn/v1', model:'Qwen/Qwen2.5-72B-Instruct' },
+  openai:      { baseUrl:'https://api.openai.com/v1',     model:'gpt-4o-mini' },
+  custom:      { baseUrl:'', model:'' }
+};
+
+/* ================= 设置 ================= */
+const DEFAULTS = { preset:'deepseek', baseUrl:PRESETS.deepseek.baseUrl, model:PRESETS.deepseek.model, apiKey:'',
+  glossary:'', showSrc:true, fontSize:20, lastScene:'class', lastLang:{ class:'en-GB', anime:'ja-JP', chat:'en-GB' } };
+let settings = Object.assign({}, DEFAULTS, ls.get('lt_settings', {}));
+if (!settings.lastLang || typeof settings.lastLang !== 'object') settings.lastLang = Object.assign({}, DEFAULTS.lastLang);
+const saveSettings = () => ls.set('lt_settings', settings);
+
+/* ================= 存储（IndexedDB，失败时退回 localStorage） ================= */
+const DB = {
+  db: null,
+  open(){
+    return new Promise(res => {
+      try{
+        if (!window.indexedDB) return res();
+        const r = indexedDB.open('lt-db', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('sessions', { keyPath:'id' });
+        r.onsuccess = () => { this.db = r.result; res(); };
+        r.onerror = () => res(); r.onblocked = () => res();
+      }catch(e){ res(); }
+    });
+  },
+  all(){
+    if (!this.db) return Promise.resolve(ls.get('lt_sessions_fb', []));
+    return new Promise(res => {
+      try{
+        const q = this.db.transaction('sessions', 'readonly').objectStore('sessions').getAll();
+        q.onsuccess = () => res(q.result || []); q.onerror = () => res([]);
+      }catch(e){ res([]); }
+    });
+  },
+  put(s){
+    if (!this.db){ ls.set('lt_sessions_fb', sessions); return Promise.resolve(); }
+    return new Promise(res => {
+      try{
+        const tx = this.db.transaction('sessions', 'readwrite');
+        tx.objectStore('sessions').put(JSON.parse(JSON.stringify(s)));
+        tx.oncomplete = () => res(); tx.onerror = () => res();
+      }catch(e){ res(); }
+    });
+  },
+  del(id){
+    if (!this.db){ ls.set('lt_sessions_fb', sessions); return Promise.resolve(); }
+    return new Promise(res => {
+      try{
+        const tx = this.db.transaction('sessions', 'readwrite'); tx.objectStore('sessions').delete(id);
+        tx.oncomplete = () => res(); tx.onerror = () => res();
+      }catch(e){ res(); }
+    });
+  }
+};
+let sessions = [];
+const dirty = new Set(); let saveTimer = null;
+function markDirty(s){ s.updatedAt = Date.now(); dirty.add(s.id); clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 700); }
+function flushSave(){ clearTimeout(saveTimer); dirty.forEach(id => { const s = getS(id); if (s) DB.put(s); }); dirty.clear(); }
+window.addEventListener('pagehide', flushSave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+const getS = id => sessions.find(s => s.id === id);
+
+/* ================= 状态 ================= */
+let viewId = null, tab = 'subs';
+let recId = null;               // 正在记录的那条
+const segNodes = new Map();
+
+/* ================= 侧栏 ================= */
+function sessText(s){ return s.segments.map(x => x.src + ' ' + (x.zh || '')).join(' '); }
+function groupOf(t){
+  const d = new Date(t), now = new Date();
+  const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (t >= day0) return '今天';
+  if (t >= day0 - 864e5) return '昨天';
+  if (t >= day0 - 6 * 864e5) return '最近 7 天';
+  return d.getFullYear() === now.getFullYear() ? (d.getMonth() + 1) + ' 月' : d.getFullYear() + ' 年 ' + (d.getMonth() + 1) + ' 月';
+}
+function renderSide(){
+  const q = $('search').value.trim().toLowerCase();
+  const list = sessions.slice().sort((a, b) => b.createdAt - a.createdAt)
+    .filter(s => !q || (s.title + ' ' + (s.topic || '')).toLowerCase().includes(q) || sessText(s).toLowerCase().includes(q));
+  const el = $('sessList');
+  if (!sessions.length){ el.innerHTML = '<div class="side-empty">还没有记录<br>点上面的“新建记录”开始</div>'; return; }
+  if (!list.length){ el.innerHTML = '<div class="side-empty">没有找到相关记录</div>'; return; }
+  let html = '', last = '';
+  list.forEach(s => {
+    const g = groupOf(s.createdAt);
+    if (g !== last){ html += '<div class="group">' + esc(g) + '</div>'; last = g; }
+    const sc = SCENES[s.scene] || SCENES.class;
+    const n = s.segments.length;
+    html += '<button class="sess' + (s.id === viewId ? ' active' : '') + '" data-id="' + s.id + '">' +
+      '<span class="em">' + sc.em + '</span><span class="body"><div class="tt">' + esc(s.title) + '</div>' +
+      '<div class="mm">' + (s.id === recId ? '<span class="recdot"></span>记录中 · ' : '') +
+      hm(s.createdAt) + ' · ' + langName(s.lang) + ' · ' + n + ' 句' + (s.summary ? ' · 有笔记' : '') + '</div></span></button>';
+  });
+  el.innerHTML = html;
+  el.querySelectorAll('.sess').forEach(b => b.onclick = () => { openSession(b.dataset.id); closeSide(); });
+}
+$('search').addEventListener('input', renderSide);
+function openSide(){ $('side').classList.add('open'); $('scrim').classList.add('show'); }
+function closeSide(){ $('side').classList.remove('open'); $('scrim').classList.remove('show'); }
+$('btnSide').onclick = openSide; $('scrim').onclick = closeSide;
+
+/* ================= 主视图 ================= */
+function showPanel(name){
+  ['pWelcome','pSubs','pSum','pQA'].forEach(p => $(p).style.display = p === name ? '' : 'none');
+  $('dock').style.display = name === 'pSubs' ? '' : 'none';
+  $('qaDock').style.display = name === 'pQA' ? '' : 'none';
+  $('jump').classList.remove('show');
+}
+function renderHeader(){
+  const s = getS(viewId);
+  if (!s){
+    $('title').textContent = '实时同传'; $('meta').innerHTML = '';
+    $('tabs').style.display = 'none'; $('btnMore').style.display = 'none'; return;
+  }
+  $('tabs').style.display = ''; $('btnMore').style.display = '';
+  if ($('title').getAttribute('contenteditable') !== 'true') $('title').textContent = s.title;
+  const sc = SCENES[s.scene] || SCENES.class;
+  const first = s.segments[0], lastSeg = s.segments[s.segments.length - 1];
+  const mins = first ? Math.max(1, Math.round((lastSeg.t - first.t) / 60000)) : 0;
+  $('meta').innerHTML =
+    (s.id === recId ? '<span class="chip rec">● 记录中</span>' : '') +
+    '<span class="chip">' + sc.em + ' ' + sc.name + '</span>' +
+    '<span class="chip">' + langName(s.lang) + ' → 中文</span>' +
+    '<span class="chip">' + dateLabel(s.createdAt) + ' ' + hm(s.createdAt) + '</span>' +
+    (first ? '<span class="chip">' + mins + ' 分钟 · ' + s.segments.length + ' 句</span>' : '');
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+}
+function renderMain(){
+  renderHeader();
+  const s = getS(viewId);
+  updateRecPill();
+  if (!s){
+    showPanel('pWelcome');
+    $('noKeyBox').style.display = settings.apiKey ? 'none' : '';
+    $('noSRBox').style.display = SR ? 'none' : '';
+    return;
+  }
+  if (tab === 'subs'){ showPanel('pSubs'); renderSubs(s); updateDock(); }
+  else if (tab === 'sum'){ showPanel('pSum'); renderSummary(s); }
+  else { showPanel('pQA'); renderQA(s); }
+}
+function openSession(id, t){
+  if ($('title').getAttribute('contenteditable') === 'true') $('title').blur();
+  viewId = id; if (t) tab = t; else if (id !== recId && getS(id) && getS(id).segments.length && !t) tab = tab || 'subs';
+  ls.set('lt_lastView', id);
+  renderSide(); renderMain();
+}
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.tab; renderMain(); });
+
+/* ---------- 字幕面板 ---------- */
+function renderSubs(s){
+  $('segList').innerHTML = ''; segNodes.clear();
+  s.segments.forEach(x => renderSeg(x, s));
+  $('subsEmpty').style.display = s.segments.length ? 'none' : '';
+  $('subsInner').classList.toggle('hide-src', !settings.showSrc);
+  document.documentElement.style.setProperty('--zh-size', settings.fontSize + 'px');
+  if (s.id !== recId) setLive('');
+  else setLive(interim);
+  stick = true; scrollEnd(true);
+}
+function renderSeg(x, s){
+  if (!s || s.id !== viewId || tab !== 'subs') return;
+  let el = segNodes.get(x.id);
+  if (!el){
+    el = document.createElement('div'); el.className = 'seg';
+    el.innerHTML = '<div class="tm"></div><div><div class="src"></div><div class="zh"></div></div>';
+    el.querySelector('.zh').onclick = () => { if (x.status === 'err') translate(x, s); };
+    $('segList').appendChild(el); segNodes.set(x.id, el);
+    $('subsEmpty').style.display = 'none';
+  }
+  el.querySelector('.tm').textContent = hm(x.t);
+  el.querySelector('.src').textContent = x.src;
+  const zh = el.querySelector('.zh');
+  zh.className = 'zh' + (x.status === 'pending' && !x.zh ? ' pending' : '') + (x.status === 'err' ? ' err' : '');
+  zh.textContent = x.status === 'err' ? '⚠ ' + (x.errMsg || '翻译失败') + ' · 点这里重试' : (x.zh || '翻译中…');
+}
+function setLive(t){
+  const show = !!t && viewId === recId && tab === 'subs';
+  $('live').style.display = show ? '' : 'none';
+  $('liveText').textContent = t || '';
+}
+let stick = true;
+['pSubs','pQA'].forEach(id => $(id).addEventListener('scroll', () => {
+  const p = $(id); const near = p.scrollHeight - p.scrollTop - p.clientHeight < 140;
+  stick = near; $('jump').classList.toggle('show', !near && id === 'pSubs' && (getS(viewId) || {segments:[]}).segments.length > 0);
+}));
+function scrollEnd(force){
+  const p = tab === 'qa' ? $('pQA') : $('pSubs');
+  if (force || stick) p.scrollTop = p.scrollHeight;
+}
+$('jump').onclick = () => { stick = true; scrollEnd(true); $('jump').classList.remove('show'); };
+
+function updateDock(){
+  const on = recId && recId === viewId;
+  $('btnRec').classList.toggle('on', !!on);
+  const s = getS(viewId);
+  $('btnRecText').textContent = on ? '暂停' : (s && s.segments.length ? '继续记录' : '开始记录');
+  $('btnEnd').style.display = on ? '' : 'none';
+}
+function updateRecPill(){
+  const r = getS(recId);
+  const show = !!r && recId !== viewId;
+  $('recPill').classList.toggle('show', show);
+  if (show) $('recPillName').textContent = r.title;
+}
+$('recPill').onclick = () => openSession(recId, 'subs');
+
+/* 字号 & 原文 */
+$('fontUp').onclick = () => { settings.fontSize = Math.min(40, settings.fontSize + 2); saveSettings(); document.documentElement.style.setProperty('--zh-size', settings.fontSize + 'px'); };
+$('fontDown').onclick = () => { settings.fontSize = Math.max(14, settings.fontSize - 2); saveSettings(); document.documentElement.style.setProperty('--zh-size', settings.fontSize + 'px'); };
+
+/* ================= 大模型接口 ================= */
+function endpoint(){
+  const b = (settings.baseUrl || '').trim().replace(/\/+$/, '');
+  return /\/chat\/completions$/.test(b) ? b : b + '/chat/completions';
+}
+async function streamChat(messages, onDelta, opt = {}){
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), opt.timeout || 30000);
+  try{
+    const body = { model: settings.model.trim(), messages, stream: true, temperature: opt.temperature ?? 0.3 };
+    if (opt.max_tokens) body.max_tokens = opt.max_tokens;
+    const res = await fetch(endpoint(), {
+      method:'POST', signal: ctrl.signal,
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + settings.apiKey.trim() },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok){
+      let msg = 'HTTP ' + res.status;
+      try{ const j = await res.json(); msg += '：' + ((j.error && j.error.message) || JSON.stringify(j)).slice(0, 160); }catch(e){}
+      throw new Error(msg);
+    }
+    let full = '';
+    const emit = d => { full += d; onDelta && onDelta(d, full); clearTimeout(timer); };
+    if (!res.body || !res.body.getReader){ parseSSE(await res.text(), emit); return full; }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    let idle = setTimeout(() => ctrl.abort(), opt.timeout || 30000);
+    while (true){
+      const { value, done } = await reader.read();
+      if (done) break;
+      clearTimeout(idle); idle = setTimeout(() => ctrl.abort(), 30000);
+      buf += dec.decode(value, { stream: true });
+      const nl = buf.lastIndexOf('\n');
+      if (nl >= 0){ parseSSE(buf.slice(0, nl), emit); buf = buf.slice(nl + 1); }
+    }
+    clearTimeout(idle);
+    if (buf.trim()) parseSSE(buf, emit);
+    return full;
+  } finally { clearTimeout(timer); }
+}
+function parseSSE(chunk, emit){
+  chunk.split('\n').forEach(line => {
+    line = line.trim(); if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim(); if (!data || data === '[DONE]') return;
+    try{
+      const j = JSON.parse(data); const c = j.choices && j.choices[0];
+      const d = c && (c.delta || c.message);
+      if (d && d.content) emit(d.content);
+    }catch(e){}
+  });
+}
+function friendlyErr(e){
+  const m = String((e && e.message) || e);
+  if (e && e.name === 'AbortError') return '请求超时';
+  if (/Failed to fetch|Load failed|NetworkError/i.test(m)) return '连不上翻译接口（检查网络和接口地址，也可能是该服务不允许网页直连）';
+  if (/401|403/.test(m)) return 'API Key 不对或没有权限';
+  if (/402|insufficient|balance/i.test(m)) return '账户余额不足';
+  if (/429/.test(m)) return '请求太频繁，稍后再试';
+  return m.slice(0, 140);
+}
+
+/* ================= 翻译 ================= */
+function glossaryText(){
+  const g = settings.glossary.split('\n').map(x => x.trim()).filter(Boolean);
+  return g.length ? '\n\n必须遵守的术语表：\n' + g.join('\n') : '';
+}
+function transPrompt(s){
+  const L = langName(s.lang);
+  const common = '原文来自语音识别，可能有错词、漏词或断句不完整，请结合上下文推断真实意思再翻译。\n' +
+    '只输出这一句的译文，不要解释、不要加引号、不要重复前文、不要附原文。如果这句完全无意义，输出“……”。';
+  const topic = (s.topic || '').trim();
+  let p;
+  if (s.scene === 'anime'){
+    p = '你是资深字幕组翻译，把动漫/影视里角色说的' + L + '实时译成简体中文字幕。\n要求：\n' +
+      '1. 像优秀字幕组那样地道、自然，有画面感，贴合角色的语气和性格（热血、傲娇、搞笑、严肃等），不要机翻腔。\n' +
+      '2. 语气词、感叹、吐槽要译出味道（如“欸？！”“不会吧”“笨蛋”），但不要过度网络化。\n' +
+      '3. 人名、招式名、专有名词用中文圈通行译名；不确定的就音译，并保持前后一致。\n' +
+      '4. 字幕要简短，一句尽量不超过 25 个字。\n' + common;
+    if (topic) p += '\n\n正在看的作品：' + topic + '（请使用该作品通行的中文译名）';
+  } else if (s.scene === 'chat'){
+    p = '你是专业口译，把对方说的' + L + '实时译成自然、口语化的简体中文。\n要求：\n' +
+      '1. 意思准确、表达地道，像中国人平时说话，不要翻译腔，可以调整语序。\n2. 口头禅、重复、卡顿直接省略。\n3. 人名、公司名、产品名保留原文。\n' + common;
+    if (topic) p += '\n\n对话背景：' + topic;
+  } else {
+    p = '你是大学课堂上的同声传译，为一名中国留学生把老师说的' + L + '实时译成简体中文。\n要求：\n' +
+      '1. 译文要自然、口语化、通顺，像一位中国老师在课上讲话，绝对不要翻译腔，不要逐词硬译，可以调整语序。\n' +
+      '2. um、you know、sort of 这类口头禅直接省略。\n' +
+      '3. 专业术语用学界通行的中文译法，并在中文后用括号保留原词，例如“异方差（heteroskedasticity）”；同一术语第二次出现可不再括注。\n' +
+      '4. 人名、机构名、软件名、代码和命令保留原文。\n' + common;
+    if (topic) p += '\n\n本节课内容：' + topic;
+  }
+  return p + glossaryText();
+}
+function transMessages(x, s){
+  const i = s.segments.indexOf(x);
+  const ctx = s.segments.slice(Math.max(0, i - 4), i).map(y => y.src).join(' ');
+  let u = ctx ? '【前文，仅供理解，不要翻译】\n' + ctx + '\n\n' : '';
+  u += '【请翻译这一句】\n' + x.src;
+  return [{ role:'system', content: transPrompt(s) }, { role:'user', content: u }];
+}
+const MAX_CONC = 3; let running = 0; const queue = [];
+function translate(x, s){
+  if (!settings.apiKey.trim()){ x.status = 'err'; x.errMsg = '还没填 API Key'; renderSeg(x, s); return; }
+  x.status = 'pending'; x.zh = ''; x.errMsg = ''; renderSeg(x, s);
+  queue.push([x, s]); pump();
+}
+function pump(){
+  while (running < MAX_CONC && queue.length){
+    const [x, s] = queue.shift(); running++;
+    streamChat(transMessages(x, s), d => { x.zh += d; renderSeg(x, s); scrollEnd(); })
+      .then(() => { x.zh = x.zh.trim(); x.status = x.zh ? 'done' : 'err'; if (!x.zh) x.errMsg = '没有返回译文'; })
+      .catch(e => { x.status = 'err'; x.errMsg = friendlyErr(e); })
+      .finally(() => { running--; renderSeg(x, s); markDirty(s); scrollEnd(); pump(); });
+  }
+}
+
+/* ================= 语音识别 ================= */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, wantRun = false, interim = '', flushTimer = null, lastFinal = '', wakeLock = null, recRestarts = 0;
+
+function addFinal(text){
+  const s = getS(recId); if (!s) return;
+  text = (text || '').replace(/\s+/g, ' ').trim();
+  if (!text || text === lastFinal) return;
+  lastFinal = text;
+  const x = { id: uid(), src: text, zh: '', status: 'pending', t: Date.now() };
+  s.segments.push(x); markDirty(s);
+  renderSeg(x, s); translate(x, s); scrollEnd();
+  if (viewId === s.id) renderHeader();
+  renderSide();
+}
+function setInterim(t){ interim = t; setLive(t); scrollEnd(); }
+// 老师停顿约 1.4 秒（看番 1 秒），或一句太长时，主动断句，让翻译更及时（iPhone/iPad 上尤其需要）
+function armFlush(){
+  clearTimeout(flushTimer);
+  const s = getS(recId); if (!interim || !s) return;
+  const tooLong = isCJK(s.lang) ? interim.replace(/\s/g, '').length > 60 : interim.trim().split(/\s+/).length > 38;
+  const delay = tooLong ? 0 : (s.scene === 'anime' ? 1000 : 1400);
+  flushTimer = setTimeout(() => { if (interim && rec){ try{ rec.stop(); }catch(e){} } }, delay);
+}
+function startRec(){
+  const s = getS(recId);
+  if (!wantRun || !s) return;
+  rec = new SR();
+  rec.lang = s.lang; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.onstart = () => { recRestarts = 0; };
+  rec.onresult = e => {
+    let it = '';
+    for (let i = e.resultIndex; i < e.results.length; i++){
+      const r = e.results[i]; if (!r) continue;
+      if (r.isFinal) addFinal(r[0].transcript); else it += r[0].transcript;
+    }
+    setInterim(it.trim()); armFlush();
+  };
+  rec.onerror = e => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      stopRec(); toast('没有麦克风权限，请在浏览器设置里允许这个网页使用麦克风', 4500); return;
+    }
+    if (e.error === 'network') toast('网络不稳，正在重连…');
+  };
+  rec.onend = () => {
+    if (interim){ addFinal(interim); setInterim(''); }
+    clearTimeout(flushTimer);
+    if (wantRun){ recRestarts++; setTimeout(startRec, recRestarts > 5 ? 1500 : 150); }
+  };
+  try{ rec.start(); }catch(e){ setTimeout(startRec, 600); }
+}
+async function keepAwake(){ try{ if ('wakeLock' in navigator && wantRun) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+
+function startRec4(id){
+  if (!SR){ toast('这个浏览器不支持语音识别。电脑用 Chrome / Edge / Safari，iPhone/iPad 用 Safari，安卓用 Chrome', 5000); return; }
+  if (!settings.apiKey.trim()){ toast('先在设置里填好 API Key'); openSettings(); return; }
+  if (recId && recId !== id) stopRec();
+  recId = id; wantRun = true; lastFinal = ''; interim = '';
+  startRec(); keepAwake();
+  renderSide(); renderMain();
+}
+function stopRec(){
+  wantRun = false; clearTimeout(flushTimer);
+  const was = recId;
+  if (rec){ try{ rec.stop(); }catch(e){} }
+  // onend 可能稍后才触发：先把未定稿的内容存下
+  if (interim){ addFinal(interim); setInterim(''); }
+  try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock = null;
+  recId = null; rec = null;
+  const s = getS(was); if (s) markDirty(s);
+  renderSide(); renderMain();
+}
+$('btnRec').onclick = () => { if (recId && recId === viewId) stopRec(); else startRec4(viewId); };
+$('btnEnd').onclick = () => {
+  const s = getS(viewId); stopRec(); flushSave();
+  if (s && s.segments.length){ tab = 'sum'; renderMain(); if (!s.summary && settings.apiKey) generateSummary(s); }
+};
+
+/* ================= 新建记录 ================= */
+let newScene = 'class';
+function fillLangSelect(sel, val){ sel.innerHTML = LANGS.map(([v, n]) => '<option value="' + v + '">' + n + '</option>').join(''); sel.value = val; }
+function setNewScene(sc){
+  newScene = sc;
+  document.querySelectorAll('#scenePick button').forEach(b => b.classList.toggle('on', b.dataset.scene === sc));
+  fillLangSelect($('newLang'), settings.lastLang[sc] || (sc === 'anime' ? 'ja-JP' : 'en-GB'));
+  $('topicLabel').textContent = SCENES[sc].topicLabel; $('newTopic').placeholder = SCENES[sc].topicPh;
+}
+function openNew(sc){ setNewScene(sc || settings.lastScene || 'class'); $('newTopic').value = ''; openMask('newMask'); setTimeout(() => { try{ $('newTopic').focus(); }catch(e){} }, 50); }
+document.querySelectorAll('#scenePick button').forEach(b => b.onclick = () => setNewScene(b.dataset.scene));
+document.querySelectorAll('.scard').forEach(b => b.onclick = () => openNew(b.dataset.scene));
+$('btnNew').onclick = () => { closeSide(); openNew(); };
+$('newTopic').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) $('btnCreate').click(); });
+$('btnCreate').onclick = () => {
+  const topic = $('newTopic').value.trim(), lang = $('newLang').value, sc = SCENES[newScene];
+  const now = Date.now();
+  const s = { id: uid(), title: topic || (sc.name + ' · ' + dateLabel(now) + ' ' + hm(now)), scene: newScene, lang, topic,
+    createdAt: now, updatedAt: now, segments: [], summary: '', qa: [] };
+  sessions.push(s); markDirty(s);
+  settings.lastScene = newScene; settings.lastLang[newScene] = lang; saveSettings();
+  closeMask('newMask');
+  tab = 'subs'; openSession(s.id, 'subs');
+  startRec4(s.id);
+};
+
+/* ================= 简易 Markdown ================= */
+function md(src){
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  let html = '', list = null;
+  const close = () => { if (list){ html += '</' + list + '>'; list = null; } };
+  (src || '').split('\n').forEach(raw => {
+    const l = raw.replace(/\s+$/, ''); let m;
+    if ((m = l.match(/^(#{1,4})\s+(.*)/))){ close(); const n = Math.max(2, Math.min(5, m[1].length)); html += '<h' + n + '>' + inline(m[2]) + '</h' + n + '>'; }
+    else if ((m = l.match(/^\s*[-*+•]\s+(.*)/))){ if (list !== 'ul'){ close(); html += '<ul>'; list = 'ul'; } html += '<li>' + inline(m[1]) + '</li>'; }
+    else if ((m = l.match(/^\s*\d+[.)、]\s+(.*)/))){ if (list !== 'ol'){ close(); html += '<ol>'; list = 'ol'; } html += '<li>' + inline(m[1]) + '</li>'; }
+    else if ((m = l.match(/^>\s?(.*)/))){ close(); html += '<blockquote>' + inline(m[1]) + '</blockquote>'; }
+    else if (/^\s*(-{3,}|\*{3,})\s*$/.test(l)){ close(); }
+    else if (!l.trim()){ close(); }
+    else { close(); html += '<p>' + inline(l) + '</p>'; }
+  });
+  close(); return html;
+}
+
+/* ================= 总结笔记 ================= */
+function transcript(s, maxChars){
+  const t0 = s.segments.length ? s.segments[0].t : 0;
+  const lines = s.segments.map(x => {
+    const sec = Math.round((x.t - t0) / 1000);
+    return '[' + pad(Math.floor(sec / 60)) + ':' + pad(sec % 60) + '] ' + x.src;
+  });
+  let text = lines.join('\n');
+  if (maxChars && text.length > maxChars) text = '（前面省略）\n' + text.slice(-maxChars);
+  return text;
+}
+function sumPrompt(s){
+  const L = langName(s.lang), topic = s.topic ? '（' + s.topic + '）' : '';
+  const rule = '\n\n规则：用简体中文，Markdown 格式（用 ## 标题和 - 列表，不要用表格）；只根据逐字稿，不要编造；逐字稿来自语音识别，遇到明显识别错误请按上下文纠正。';
+  if (s.scene === 'anime') return '下面是一段动漫/影视' + topic + '的' + L + '台词语音识别稿。请整理成观看笔记，包含这些部分：\n' +
+    '## 剧情梗概\n## 出场角色（名字用通行中文译名）\n## 精彩台词（原文 + 中文，5-8 句）\n## 语言学习：值得学的' + L + '词句（原文、读音/假名、意思、用法）' + rule;
+  if (s.scene === 'chat') return '下面是一段' + L + '对话' + topic + '的语音识别稿。请整理成中文纪要，包含这些部分：\n' +
+    '## 一句话概括\n## 讨论要点\n## 决定与待办（谁、做什么、何时）\n## 关键信息（数字、日期、名字）\n## 值得学的' + L + '表达' + rule;
+  return '下面是一节大学课程' + topic + '的' + L + '语音识别逐字稿，方括号是从开课起的时间。请为一名中国留学生写一份课后复习笔记，包含这些部分：\n' +
+    '## 一句话概括\n' +
+    '## 本节结构（按时间顺序，标出大致时间点）\n' +
+    '## 核心知识点（每点讲清是什么、为什么、怎么用；有公式就用文字写出来；有例子就带上）\n' +
+    '## 重要术语（格式：- **英文原词** 中文译名：一句话解释）\n' +
+    '## 老师强调的重点、可能的考点、作业和通知\n' +
+    '## 需要课后核对的地方（识别不清或讲得含糊的内容）\n' +
+    '## 自测题（3-5 题，每题附简短答案）' + rule;
+}
+let sumBusy = null;
+function renderSummary(s){
+  const el = $('sumInner');
+  if (sumBusy === s.id) return; // 生成中，由生成过程渲染
+  if (!s.segments.length){
+    el.innerHTML = '<div class="sum-empty"><div class="big">📝</div>还没有字幕内容。<br>先在“字幕”里开始记录，结束后就能生成笔记。</div>'; return;
+  }
+  if (!s.summary){
+    el.innerHTML = '<div class="sum-empty"><div class="big">✨</div>根据这次的 ' + s.segments.length + ' 句字幕，用 AI 整理成复习笔记：<br>' +
+      (s.scene === 'class' ? '知识点、术语表、考点、自测题' : s.scene === 'anime' ? '剧情梗概、角色、精彩台词、语言学习' : '要点、待办、关键信息') +
+      '<br><br><button class="btn primary" id="btnGen">生成笔记</button></div>';
+    $('btnGen').onclick = () => generateSummary(s); return;
+  }
+  el.innerHTML = '<div class="sum-tools"><button class="btn" id="btnSumCopy">复制笔记</button><button class="btn" id="btnSumRe">重新生成</button></div>' +
+    '<div class="md">' + md(s.summary) + '</div>' +
+    (s.summaryAt ? '<p class="progress" style="margin-top:24px">生成于 ' + dateLabel(s.summaryAt) + ' ' + hm(s.summaryAt) + ' · 基于 ' + (s.summaryCount || s.segments.length) + ' 句字幕' +
+      (s.summaryCount && s.summaryCount < s.segments.length ? '（之后又新增了 ' + (s.segments.length - s.summaryCount) + ' 句，可重新生成）' : '') + '</p>' : '');
+  $('btnSumCopy').onclick = async () => { try{ await navigator.clipboard.writeText(s.summary); toast('已复制'); }catch(e){ toast('复制失败，可用“下载笔记”'); } };
+  $('btnSumRe').onclick = async () => { if (await confirmBox('重新生成笔记？', '会覆盖当前这份笔记。', '重新生成')) generateSummary(s); };
+}
+async function generateSummary(s){
+  if (!settings.apiKey.trim()){ toast('先在设置里填好 API Key'); openSettings(); return; }
+  if (sumBusy){ toast('正在生成另一份笔记，请稍等'); return; }
+  sumBusy = s.id;
+  const el = $('sumInner');
+  const show = (prog, text) => {
+    if (sumBusy !== s.id || viewId !== s.id || tab !== 'sum') return;
+    el.innerHTML = '<p class="progress">⏳ ' + esc(prog) + '</p><div class="md">' + md(text || '') + '</div>';
+  };
+  try{
+    const full = transcript(s);
+    let material = full, note = '';
+    const LIMIT = 45000;
+    if (full.length > LIMIT){
+      // 太长：分段提炼，再合并
+      const lines = full.split('\n'); const chunks = []; let cur = '';
+      lines.forEach(l => { if ((cur + l).length > LIMIT && cur){ chunks.push(cur); cur = ''; } cur += l + '\n'; });
+      if (cur) chunks.push(cur);
+      const parts = [];
+      for (let i = 0; i < chunks.length; i++){
+        show('内容较长，正在整理第 ' + (i + 1) + ' / ' + chunks.length + ' 部分…');
+        const r = await streamChat([
+          { role:'system', content:'你是认真负责的助教。把下面这段语音识别稿提炼成详细的中文要点，保留所有知识点、例子、术语（附原文）、时间点、老师强调的内容和通知，不要遗漏。' },
+          { role:'user', content: chunks[i] }], null, { temperature:0.2, max_tokens:3000, timeout:90000 });
+        parts.push('【第 ' + (i + 1) + ' 部分要点】\n' + r);
+      }
+      material = parts.join('\n\n'); note = '（以下是分段提炼后的要点，不是原始逐字稿）\n';
+    }
+    let shown = '';
+    const out = await streamChat([
+      { role:'system', content: sumPrompt(s) + glossaryText() },
+      { role:'user', content: note + material }],
+      (d, f) => { shown = f; if (!show._raf){ show._raf = requestAnimationFrame(() => { show._raf = 0; show('正在生成笔记…', shown); }); } },
+      { temperature:0.3, max_tokens:4000, timeout:90000 });
+    if (!out.trim()) throw new Error('没有返回内容');
+    s.summary = out.trim(); s.summaryAt = Date.now(); s.summaryCount = s.segments.length; markDirty(s); flushSave();
+    toast('笔记已生成并保存');
+  }catch(e){
+    toast('生成失败：' + friendlyErr(e), 4000);
+  }finally{
+    sumBusy = null; renderSide(); if (viewId === s.id && tab === 'sum') renderSummary(s);
+  }
+}
+
+/* ================= 提问 ================= */
+let qaBusy = false;
+function qaSuggestions(s){
+  if (s.scene === 'anime') return ['这集讲了什么？', '主要角色分别是谁？', '有哪些日语表达值得学？'];
+  if (s.scene === 'chat') return ['大家最后决定了什么？', '我需要做哪些事？', '对方的主要观点是什么？'];
+  return ['这节课最重要的三个知识点是什么？', '用简单的话解释一下老师讲的主要概念', '老师有没有提到作业或考试？', '帮我出几道练习题'];
+}
+function renderQA(s){
+  const el = $('qaInner');
+  if (!s.segments.length){ el.innerHTML = '<div class="sum-empty"><div class="big">💭</div>有了字幕内容之后，就可以在这里问关于这次内容的问题。</div>'; return; }
+  let html = '';
+  if (!s.qa.length){
+    html += '<div class="sum-empty" style="padding:6vh 10px 10px"><div class="big">💭</div>可以问关于这次内容的任何问题，例如：</div>';
+  }
+  html += '<div id="qaList">';
+  s.qa.forEach((m, i) => {
+    html += '<div class="qa-item"><div class="bubble q">' + esc(m.q) + '</div></div>' +
+      '<div class="qa-item"><div class="bubble a md" id="qa-a-' + i + '">' + (m.a ? md(m.a) : '<span style="color:var(--faint)">思考中…</span>') + '</div></div>';
+  });
+  html += '</div>';
+  if (!s.qa.length) html += '<div class="qa-suggest">' + qaSuggestions(s).map(q => '<button>' + esc(q) + '</button>').join('') + '</div>';
+  el.innerHTML = html;
+  el.querySelectorAll('.qa-suggest button').forEach(b => b.onclick = () => { $('qaInput').value = b.textContent; askQA(); });
+  stick = true; scrollEnd(true);
+}
+async function askQA(){
+  const s = getS(viewId); const q = $('qaInput').value.trim();
+  if (!s || !q || qaBusy) return;
+  if (!settings.apiKey.trim()){ toast('先在设置里填好 API Key'); openSettings(); return; }
+  qaBusy = true; $('qaInput').value = ''; autoGrow();
+  const item = { q, a: '', t: Date.now() }; s.qa.push(item); markDirty(s); renderQA(s);
+  const idx = s.qa.length - 1;
+  const ctx = (s.summary ? '【已整理的笔记】\n' + s.summary + '\n\n' : '') + '【逐字稿】\n' + transcript(s, s.summary ? 30000 : 50000);
+  const msgs = [{ role:'system', content:
+    '你是耐心的助教，正在帮一名中国留学生复习。下面是这次' + (SCENES[s.scene] || SCENES.class).name + '内容（' + langName(s.lang) + '）的材料。' +
+    '请用简体中文回答，清楚易懂；专业术语附原文。优先依据材料回答，并尽量指出对应的时间点；材料里没有的内容，可以用你的知识补充，但要说明“材料中没有提到”。回答用 Markdown，不要用表格。\n\n' + ctx }];
+  s.qa.slice(Math.max(0, idx - 4), idx).forEach(m => { msgs.push({ role:'user', content:m.q }); msgs.push({ role:'assistant', content:m.a || '' }); });
+  msgs.push({ role:'user', content:q });
+  try{
+    await streamChat(msgs, (d, f) => {
+      item.a = f; const n = document.getElementById('qa-a-' + idx);
+      if (n && viewId === s.id && tab === 'qa'){ n.innerHTML = md(f); scrollEnd(); }
+    }, { temperature:0.4, max_tokens:2000, timeout:60000 });
+    if (!item.a) item.a = '（没有返回内容）';
+  }catch(e){ item.a = '⚠ ' + friendlyErr(e); }
+  finally{ qaBusy = false; markDirty(s); if (viewId === s.id && tab === 'qa') renderQA(s); }
+}
+function autoGrow(){ const t = $('qaInput'); t.style.height = 'auto'; t.style.height = Math.min(120, t.scrollHeight) + 'px'; }
+$('qaInput').addEventListener('input', autoGrow);
+$('qaInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); askQA(); } });
+$('qaSend').onclick = askQA;
+
+/* ================= 记录菜单 ================= */
+$('btnMore').onclick = () => { $('mToggleSrc').textContent = settings.showSrc ? '👁 隐藏原文' : '👁 显示原文'; openMask('moreMask'); };
+$('mRename').onclick = () => {
+  closeMask('moreMask'); const t = $('title');
+  t.setAttribute('contenteditable', 'true'); t.focus();
+  try{ const r = document.createRange(); r.selectNodeContents(t); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }catch(e){}
+};
+$('title').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing){ e.preventDefault(); $('title').blur(); } });
+$('title').addEventListener('blur', () => {
+  const t = $('title'); if (t.getAttribute('contenteditable') !== 'true') return;
+  t.removeAttribute('contenteditable');
+  const s = getS(viewId); const v = t.textContent.trim();
+  if (s && v){ s.title = v.slice(0, 80); markDirty(s); }
+  renderSide(); renderHeader();
+});
+$('title').addEventListener('dblclick', () => { if (getS(viewId)) $('mRename').onclick(); });
+$('mToggleSrc').onclick = () => { settings.showSrc = !settings.showSrc; saveSettings(); $('subsInner').classList.toggle('hide-src', !settings.showSrc); closeMask('moreMask'); };
+$('mRetry').onclick = () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s) return;
+  const bad = s.segments.filter(x => x.status === 'err' || !x.zh);
+  if (!bad.length){ toast('没有翻译失败的句子'); return; }
+  tab = 'subs'; renderMain(); bad.forEach(x => translate(x, s)); toast('正在重试 ' + bad.length + ' 句');
+};
+function subsText(s){ return s.segments.map(x => '[' + hm(x.t) + '] ' + x.src + '\n' + (x.zh || '')).join('\n\n'); }
+$('mCopy').onclick = async () => { const s = getS(viewId); closeMask('moreMask'); try{ await navigator.clipboard.writeText(subsText(s)); toast('已复制'); }catch(e){ toast('复制失败，请用下载'); } };
+$('mTxt').onclick = () => { const s = getS(viewId); closeMask('moreMask'); download(safeName(s.title) + '_字幕.txt', s.title + '\n' + dateLabel(s.createdAt) + '\n\n' + subsText(s)); };
+$('mMd').onclick = () => {
+  const s = getS(viewId); closeMask('moreMask');
+  let t = '# ' + s.title + '\n\n' + dateLabel(s.createdAt) + ' ' + hm(s.createdAt) + ' · ' + langName(s.lang) + '\n\n';
+  if (s.summary) t += '# 笔记\n\n' + s.summary + '\n\n';
+  if (s.qa.length) t += '# 问答\n\n' + s.qa.map(m => '**问：' + m.q + '**\n\n' + m.a).join('\n\n') + '\n\n';
+  t += '# 字幕\n\n' + s.segments.map(x => '- `' + hm(x.t) + '` ' + x.src + '  \n  ' + (x.zh || '')).join('\n');
+  download(safeName(s.title) + '.md', t, 'text/markdown');
+};
+$('mDelete').onclick = async () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s) return;
+  if (!await confirmBox('删除这条记录？', '“' + s.title + '”的字幕、笔记和问答都会被删除，无法恢复。', '删除')) return;
+  if (recId === s.id) stopRec();
+  sessions = sessions.filter(x => x.id !== s.id); await DB.del(s.id);
+  viewId = null; ls.del('lt_lastView'); renderSide(); renderMain(); toast('已删除');
+};
+
+/* ================= 设置 ================= */
+const SF = ['baseUrl','model','apiKey','glossary'];
+function openSettings(){
+  closeSide(); $('preset').value = settings.preset; SF.forEach(f => $(f).value = settings[f] || '');
+  $('testOut').textContent = ''; openMask('settingsMask');
+}
+$('btnSettings').onclick = openSettings;
+$('preset').onchange = () => { const p = PRESETS[$('preset').value]; if (p.baseUrl) $('baseUrl').value = p.baseUrl; if (p.model) $('model').value = p.model; };
+$('btnSave').onclick = () => {
+  settings.preset = $('preset').value; SF.forEach(f => settings[f] = $(f).value.trim());
+  saveSettings(); closeMask('settingsMask'); toast('已保存'); renderMain();
+};
+$('btnTest').onclick = async () => {
+  const backup = Object.assign({}, settings);
+  settings.preset = $('preset').value; SF.forEach(f => settings[f] = $(f).value.trim());
+  const out = $('testOut'); out.style.color = ''; out.textContent = '测试中…';
+  const fake = { scene:'class', lang:'en-GB', topic:'Quantitative Methods', segments:[] };
+  try{
+    const r = await streamChat([{ role:'system', content: transPrompt(fake) }, { role:'user', content:"【请翻译这一句】\nSo what we're basically doing here is, um, running a regression and checking whether the errors are heteroskedastic." }],
+      (d, f) => { out.textContent = '✅ 可以用了。示例译文：\n' + f; });
+    if (!r) throw new Error('没有返回译文');
+  }catch(e){ out.style.color = 'var(--rec)'; out.textContent = '❌ ' + friendlyErr(e); }
+  finally{ settings = backup; }
+};
+
+/* ================= 备份 / 恢复 ================= */
+$('btnBackup').onclick = async () => {
+  closeSide(); openMask('backupMask');
+  let info = '当前共有 ' + sessions.length + ' 条记录。';
+  try{
+    if (navigator.storage && navigator.storage.estimate){
+      const e = await navigator.storage.estimate(); info += ' 已用空间约 ' + (e.usage / 1048576).toFixed(1) + ' MB。';
+    }
+  }catch(e){}
+  $('storageInfo').textContent = info;
+};
+$('btnExportAll').onclick = () => {
+  flushSave();
+  const d = new Date();
+  download('实时同传备份_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '.json',
+    JSON.stringify({ app:'lecture-translator', version:2, exportedAt: Date.now(), sessions }, null, 1), 'application/json');
+};
+$('btnImport').onclick = () => $('importFile').click();
+$('importFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try{
+    const j = JSON.parse(await f.text()); const arr = Array.isArray(j) ? j : j.sessions;
+    if (!Array.isArray(arr)) throw new Error('格式不对');
+    let add = 0, upd = 0;
+    for (const s of arr){
+      if (!s || !s.id || !Array.isArray(s.segments)) continue;
+      s.qa = s.qa || []; s.summary = s.summary || '';
+      const old = getS(s.id);
+      if (old){ if ((s.updatedAt || 0) > (old.updatedAt || 0)){ Object.assign(old, s); await DB.put(old); upd++; } }
+      else { sessions.push(s); await DB.put(s); add++; }
+    }
+    if (!DB.db) ls.set('lt_sessions_fb', sessions);
+    renderSide(); toast('导入完成：新增 ' + add + ' 条，更新 ' + upd + ' 条'); closeMask('backupMask');
+  }catch(err){ toast('导入失败：' + err.message); }
+};
+
+/* ================= 网页字幕书签 ================= */
+const OVERLAY_SRC = "(()=>{if(window.__animeSub)return window.__animeSubPreset&&window.__animeSub.set(window.__animeSubPreset),window.__animeSub.toggle(),\"toggled\";const e=\"__animeSubCfg\";let t={};try{t=JSON.parse(localStorage.getItem(e)||\"{}\")}catch(e){}t=Object.assign({baseUrl:\"https://api.deepseek.com\",model:\"deepseek-chat\",apiKey:\"\",lang:\"ja-JP\",title:\"\",fontSize:26,showSrc:!0,asrKey:\"\",asrBase:\"https://api.siliconflow.cn/v1\",asrModel:\"FunAudioLLM/SenseVoiceSmall\"},t,window.__animeSubPreset||{});const n=()=>{try{localStorage.setItem(e,JSON.stringify(t))}catch(e){}},o=window.SpeechRecognition||window.webkitSpeechRecognition,i={ja:\"日语\",ko:\"韩语\",en:\"英语\",zh:\"中文\"},r=(...e)=>console.log(\"[AnimeSub]\",...e);function s(){const e=[...document.querySelectorAll(\"video\")].filter(e=>e.offsetWidth>100);return e.sort((e,t)=>t.offsetWidth*t.offsetHeight-e.offsetWidth*e.offsetHeight),e[0]||null}const a=(e,t,n)=>{const o=document.createElement(e);return t&&(o.style.cssText=t),null!=n&&(o.textContent=n),o},l=a(\"div\",'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;font-family:-apple-system,\"PingFang SC\",\"Microsoft YaHei\",sans-serif');l.setAttribute(\"translate\",\"no\"),l.className=\"notranslate\";const c=a(\"div\",\"position:fixed;left:50%;transform:translateX(-50%);bottom:12%;max-width:86vw;text-align:center;pointer-events:none\"),d=a(\"div\",\"display:inline-block;color:#ddd;font-size:15px;line-height:1.4;padding:2px 10px;margin-bottom:4px;background:rgba(0,0,0,.45);border-radius:6px;text-shadow:0 1px 2px #000\"),u=a(\"div\");u.appendChild(d);const f=a(\"div\",\"display:flex;flex-direction:column;align-items:center;gap:4px\");c.append(f,u);const p=a(\"div\",\"position:fixed;right:24px;bottom:24px;pointer-events:auto;background:rgba(20,22,28,.94);color:#fff;border-radius:14px;padding:10px 12px;font-size:14px;display:flex;gap:7px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.45);border:2px solid #818cf8\"),h=a(\"span\",\"width:8px;height:8px;border-radius:50%;background:#888;display:inline-block\"),g=a(\"span\",\"max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\",\"看番字幕\"),m=(e,t)=>{const n=a(\"button\",\"all:unset;cursor:pointer;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.13);font-size:14px\",e);return n.onclick=t,n},w=m(\"开始\",()=>q?Se():be()),y=m(i[t.lang.slice(0,2)]||t.lang,()=>{const e=[\"ja-JP\",\"ko-KR\",\"en-US\",\"zh-CN\"];t.lang=e[(e.indexOf(t.lang)+1)%e.length],y.textContent=i[t.lang.slice(0,2)],n(),q&&(Se(),be())}),x=m(\"原文\",()=>{t.showSrc=!t.showSrc,n(),j()}),b=m(\"A+\",()=>{t.fontSize=Math.min(48,t.fontSize+2),n(),j()}),S=m(\"A−\",()=>{t.fontSize=Math.max(14,t.fontSize-2),n(),j()}),v=m(\"✕\",()=>ve());t.lines||(t.lines=3);const k=()=>t.asrKey&&\"api\"===t.engine?/whisper/i.test(t.asrModel)?\"Whisper\":\"SenseVoice\":\"Chrome\",z=m(\"识别：\"+k(),()=>{t.asrKey?(t.engine=\"api\"===t.engine?\"chrome\":\"api\",n(),z.textContent=\"识别：\"+k(),q&&(Se(),be())):Z(\"没填识别 Key，只能用 Chrome 识别\")});z.title=\"切换语音识别方式\";const C=m(t.lines+\" 行\",()=>{t.lines=t.lines%3+1,C.textContent=t.lines+\" 行\",n(),j()});C.title=\"同时显示几句字幕\";const A=m(\"⚙\",()=>{E.style.display=\"none\"===E.style.display?\"flex\":\"none\",_.value=t.apiKey,T.value=t.asrKey||\"\",K.value=t.title,D.value=t.baseUrl,P.value=t.model});p.append(h,g,w,z,y,x,C,S,b,A,v);const E=a(\"div\",\"position:fixed;right:24px;bottom:92px;pointer-events:auto;background:rgba(20,22,28,.96);color:#fff;border-radius:12px;padding:12px;font-size:13px;display:none;flex-direction:column;gap:6px;width:300px;box-shadow:0 4px 18px rgba(0,0,0,.4)\"),M=(e,t)=>{const n=a(\"input\",\"all:unset;background:rgba(255,255,255,.1);border-radius:7px;padding:7px 9px;font-size:13px;color:#fff\");return n.placeholder=e,n.type=t||\"text\",n.autocomplete=\"off\",n.spellcheck=!1,[\"keydown\",\"keyup\",\"keypress\"].forEach(e=>n.addEventListener(e,e=>e.stopPropagation())),n},_=M(\"翻译 API Key（DeepSeek）\",\"password\"),T=M(\"识别 Key（硅基流动，可选）\",\"password\"),K=M(\"作品名（可选，用于统一译名）\"),D=M(\"接口地址\"),P=M(\"模型名\"),U=m(\"保存\",()=>{t.apiKey=_.value.trim(),t.asrKey=T.value.trim(),t.title=K.value.trim(),t.baseUrl=D.value.trim()||t.baseUrl,t.model=P.value.trim()||t.model,n(),E.style.display=\"none\",Z(t.apiKey?\"已保存，点开始\":\"没有填 Key\")});function F(){const e=document.fullscreenElement||document.webkitFullscreenElement,t=e&&\"VIDEO\"!==e.tagName?e:document.documentElement;l.parentNode!==t&&t.appendChild(l)}U.style.textAlign=\"center\",U.style.background=\"#6366f1\",U.style.padding=\"7px\",E.append(a(\"div\",\"opacity:.75\",\"Key 只保存在这台电脑的浏览器里\"),_,T,K,D,P,U),l.append(c,p,E),document.addEventListener(\"fullscreenchange\",F),document.addEventListener(\"webkitfullscreenchange\",F),setInterval(function(){const e=H||s();if(!e)return;const t=e.getBoundingClientRect();if(document.fullscreenElement||t.width<50)return c.style.left=\"50%\",c.style.bottom=\"10%\",c.style.top=\"\",void(c.style.maxWidth=\"86vw\");c.style.left=t.left+t.width/2+\"px\",c.style.bottom=Math.max(8,innerHeight-t.bottom+.08*t.height)+\"px\",c.style.maxWidth=.92*t.width+\"px\"},500);let R=\"\",W=0;const I=25e3;function O(e,t){const n=e.replace(/[，。！？、,.!?\\s…]/g,\"\");let o=0;for(const e of new Set(n))t.includes(e)&&o++;return n&&o/new Set(n).size>.5?t:e+\" \"+t}function j(){const e=function(){const e=Date.now(),n=[];for(const t of L)e-t.t>I||(t.cont&&n.length?t.zh&&(n[n.length-1]=\"refine\"===t.cont&&t.done?t.zh:\"refine\"===t.cont?n[n.length-1]:O(n[n.length-1],t.zh)):t.zh&&n.push(t.zh));return n.slice(-t.lines)}();for(;f.children.length<e.length;)f.appendChild(a(\"div\",\"display:inline-block;color:#fff;font-weight:600;line-height:1.45;padding:3px 14px;background:rgba(0,0,0,.55);border-radius:8px;text-shadow:0 1px 3px #000,0 0 2px #000;transition:opacity .2s\"));[...f.children].forEach((n,o)=>{if(o>=e.length)return void(n.style.display=\"none\");const i=o===e.length-1;n.style.display=\"\",n.textContent=e[o],n.style.fontSize=Math.round(t.fontSize*(i?1:.82))+\"px\",n.style.opacity=i?\"1\":o===e.length-2?\".72\":\".5\"}),Date.now()-W>6e3&&(R=\"\"),d.textContent=R,d.style.fontSize=Math.round(.6*t.fontSize)+\"px\",u.style.display=t.showSrc&&R?\"\":\"none\",x.style.opacity=t.showSrc?1:.5}function B(e){e&&(R=e,W=Date.now()),j()}setInterval(j,1e3);const L=[];function N(){let e=\"你是资深字幕组翻译，把动漫/影视里角色说的\"+(i[t.lang.slice(0,2)]||\"外语\")+\"实时译成简体中文字幕。要求：\\n1. 像优秀字幕组那样地道、自然，贴合角色语气和性格，不要机翻腔；不要照搬日语语序，用中国人平时说话的说法。\\n2. 语气词、感叹、吐槽要译出味道，但不要过度网络化。\\n3. 人名、招式、专有名词用中文圈通行译名，不确定就音译并保持一致。\\n4. 字幕简短，一句尽量不超过 25 个字。\\n5. 原文来自语音识别，可能有错字或断句不全，请结合上下文推断真实意思。背景音乐、歌词、无意义杂音输出空。\\n6. 如果要翻译的是接着前文的半句话，就把它和前文连起来，译成一句完整通顺的字幕。\\n7. 只输出简体中文译文，绝对不要输出日文原文或假名；不要解释、不要引号。原文实在听不清时，按上下文意译。\";return t.title&&(e+=\"\\n\\n正在看的作品：\"+t.title+\"（请使用该作品通行的中文译名）\"),e}async function V(e,n){const o=t.baseUrl.replace(/\\/+$/,\"\").replace(/\\/chat\\/completions$/,\"\")+\"/chat/completions\",i=await(window.__animeSubFetch||fetch)(o,{method:\"POST\",headers:{\"Content-Type\":\"application/json\",Authorization:\"Bearer \"+t.apiKey},body:JSON.stringify({model:t.model,messages:e,stream:!0,temperature:.3,max_tokens:160})});if(!i.ok)throw new Error(\"HTTP \"+i.status+\" \"+(await i.text()).slice(0,120));const r=i.body.getReader(),s=new TextDecoder;let a=\"\",l=\"\";for(;;){const{value:e,done:t}=await r.read();if(t)break;a+=s.decode(e,{stream:!0});const o=a.split(\"\\n\");a=o.pop();for(const e of o){const t=e.trim();if(!t.startsWith(\"data:\"))continue;const o=t.slice(5).trim();if(o&&\"[DONE]\"!==o)try{const e=JSON.parse(o).choices[0].delta.content;e&&(l+=e,n&&n(l))}catch(e){}}}return l.trim()}window.__animeSubLog=L;let H=null,J=null,$=null,q=!1,X=\"\",Y=null,G=\"\",Q=0;function Z(e,t){g.textContent=e,g.title=e,h.style.background=t||\"#888\"}function ee(e,n){!(e=function(e){e=(e||\"\").trim(),/^(ja|zh)/.test(t.lang)&&(e=e.replace(/(?<=[^\\x00-\\x7f])\\s+(?=[^\\x00-\\x7f])/g,\"\"));return e}(e))||e===G&&\"refine\"!==n||(G=e,r(\"识别：\",e),async function(e,n){const o={src:e,zh:\"\",t:Date.now(),cont:!!n};if(L.push(o),!t.apiKey)return o.zh=\"（点 ⚙ 填 API Key 后显示中文）\",void B(e);const i=L.slice(0,-1).filter(e=>e.zh&&!0!==e.cont).slice(-4).map(e=>\"原：\"+e.src+\"\\n译：\"+e.zh).join(\"\\n\"),s=[{role:\"system\",content:N()},{role:\"user\",content:(i?\"【前面的台词和已有译文，仅供参考，保持人名和语气一致，不要重复翻译】\\n\"+i+\"\\n\\n\":\"\")+(\"refine\"===n?\"【这是刚才分段翻过的一整句，请重新完整、自然地翻译】\\n\":\"【请翻译】\\n\")+e}],a=/[\\u3040-\\u30ff]/g,l=e=>((e||\"\").match(a)||[]).length>=2;try{let e=await V(s,e=>{l(e)||(o.first||(o.first=Date.now()),o.zh=e,B())});if(l(e)){r(\"译文含日文，重翻：\",e);const t=s.concat([{role:\"assistant\",content:e},{role:\"user\",content:\"你刚才的输出里还有日文。请只输出简体中文译文，一个日文假名都不要留；人名用中文译名或音译。\"}]);e=await V(t,null),l(e)&&(e=e.replace(/[\\u3040-\\u30ff]+/g,\"\").trim())}o.zh=(e||\"\").trim(),o.done=!0,B()}catch(e){o.err=String(e.message||e),r(\"翻译失败\",o.err),Z(\"翻译失败：\"+(/Failed to fetch|Refused|CSP/i.test(o.err)?\"该网站不允许连接翻译接口\":o.err),\"#f59e0b\"),B()}}(e,n))}document.addEventListener(\"visibilitychange\",()=>{if(\"visible\"===document.visibilityState&&q)try{$&&$.stop()}catch(e){}}),window.addEventListener(\"focus\",()=>{if(q&&Q)try{$&&$.stop()}catch(e){}});const te=()=>/^(ja|zh|ko)/.test(t.lang),ne=e=>(e||\"\").replace(/\\s+/g,\"\");function oe(e,t){let n=0,o=0;for(;n<e.length&&o<t;)/\\s/.test(e[n])||o++,n++;return e.slice(n)}let ie=\"\",re=null,se=[],ae=0,le=0;const ce=()=>te()?6:14;function de(e){clearTimeout(re);const t=ne(e);ie?(le>1||t!==ie)&&ee(e,\"refine\"):ee(e),le=0,ie=\"\",se=[]}let ue=!1,fe=null;function pe(e){if(q){if(!J||\"live\"!==J.readyState){let t;try{t=function(e){if(!ue){if(H=s(),!H)throw new Error(\"这个页面上没找到视频（视频可能在另一个框架里）\");try{const e=(H.captureStream?H.captureStream():H.mozCaptureStream()).getAudioTracks()[0];if(!e)throw new Error(\"拿不到视频音轨，请先让视频开始播放\");return e}catch(e){r(\"直接读取失败，改用共享标签页声音：\",e.name,e.message),ue=!0}}if(fe){const e=fe.getAudioTracks()[0];if(e&&\"live\"===e.readyState)return e}if(!e)throw Se(),new Error(\"需要重新授权：点“开始”，在弹窗里选“共享”\");if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia)throw new Error(\"这个浏览器不支持共享标签页声音\");return Z(\"请在弹窗里点“共享”（保持“共享标签页音频”打开）\",\"#f59e0b\"),navigator.mediaDevices.getDisplayMedia({video:{frameRate:1,width:320,height:180},audio:{suppressLocalAudioPlayback:!1},preferCurrentTab:!0,selfBrowserSurface:\"include\",surfaceSwitching:\"exclude\",systemAudio:\"exclude\"}).then(e=>{const t=e.getAudioTracks()[0];if(!t)throw e.getTracks().forEach(e=>e.stop()),new Error(\"没有共享声音：重新点开始，弹窗里打开“共享标签页音频”\");return fe=e,t.addEventListener(\"ended\",()=>{fe=null,q&&(Se(),Z(\"已停止共享，点“开始”重新共享\"))}),t},e=>{throw new Error(\"NotAllowedError\"===e.name?\"你取消了共享，点“开始”重试\":\"共享失败：\"+e.message)})}(e)}catch(e){return Z(e.message,\"#f59e0b\"),void(q&&setTimeout(pe,1500))}if(t&&\"function\"==typeof t.then)return void t.then(e=>{J=e,pe()},e=>{Z(e.message,\"#f59e0b\"),Se(),Z(e.message,\"#f59e0b\")});J=t}if(t.asrKey&&\"api\"===t.engine)!function(e){if(he)return;he=new(window.AudioContext||window.webkitAudioContext),he.resume&&he.resume(),me=he.createMediaStreamSource(new MediaStream([e])),ge=he.createScriptProcessor(4096,1,1);const n=he.sampleRate/16e3;let o=[],s=null,a=0,l=0,c=.004;ge.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0),u=Math.floor(d.length/n),f=new Float32Array(u);for(let e=0;e<u;e++){let t=0,o=0;const i=Math.floor(e*n),r=Math.min(d.length,Math.floor((e+1)*n));for(let e=i;e<r;e++)t+=d[e],o++;f[e]=o?t/o:0}let p=0;for(let e=0;e<u;e++)p+=f[e]*f[e];p=Math.sqrt(p/(u||1));const h=u/16,g=p>Math.max(.01,2.5*c);if(s){s.push(f),g?(a=0,l+=h):a+=h;const e=s.reduce((e,t)=>e+t.length,0)/16;if(a>=500&&e>=1500||a>=1100||e>=5e3){const e=s;s=null,function(e,n){if(n<250)return;let o=0;e.forEach(e=>o+=e.length);const s=new Float32Array(o);let a=0;e.forEach(e=>{s.set(e,a),a+=e.length});const l=function(e){const t=new ArrayBuffer(44+2*e.length),n=new DataView(t),o=(e,t)=>{for(let o=0;o<t.length;o++)n.setUint8(e+o,t.charCodeAt(o))};o(0,\"RIFF\"),n.setUint32(4,36+2*e.length,!0),o(8,\"WAVE\"),o(12,\"fmt \"),n.setUint32(16,16,!0),n.setUint16(20,1,!0),n.setUint16(22,1,!0),n.setUint32(24,16e3,!0),n.setUint32(28,32e3,!0),n.setUint16(32,2,!0),n.setUint16(34,16,!0),o(36,\"data\"),n.setUint32(40,2*e.length,!0);for(let t=0;t<e.length;t++){const o=Math.max(-1,Math.min(1,e[t]));n.setInt16(44+2*t,o<0?32768*o:32767*o,!0)}return t}(s);we=we.then(()=>async function(e){const n=t.asrBase.replace(/\\/+$/,\"\")+\"/audio/transcriptions\",o=/whisper/i.test(t.asrModel)?t.lang.slice(0,2):\"\";if(window.__animeSubASR)return window.__animeSubASR({url:n,key:t.asrKey,model:t.asrModel,lang:o,b64:ye(e)});const i=new FormData;i.append(\"file\",new Blob([e],{type:\"audio/wav\"}),\"a.wav\"),i.append(\"model\",t.asrModel),o&&i.append(\"language\",o);const r=await fetch(n,{method:\"POST\",headers:{Authorization:\"Bearer \"+t.asrKey},body:i});if(!r.ok)throw new Error(\"HTTP \"+r.status+(401===r.status?\"（识别 Key 不对）\":429===r.status?\"（请求太频繁，稍等几秒自动恢复）\":\"\"));return(await r.json()).text||\"\"}(l)).then(e=>{(e=function(e){if(e=(e||\"\").replace(/<\\|[^|]*\\|>/g,\"\").replace(/[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]/gu,\"\").trim(),xe.test(e))return r(\"过滤可疑识别：\",e),\"\";return e.replace(/^[、。,.!?！？\\s]+/,\"\").length>=2?e:\"\"}(e))&&(B(e),ee(e)),q&&Z(\"正在听 · \"+(i[t.lang.slice(0,2)]||\"\")+\" · \"+(/whisper/i.test(t.asrModel)?\"Whisper\":\"SenseVoice\"),\"#ef4444\")},e=>{r(\"识别失败\",e),Z(\"识别失败：\"+(e.message||e),\"#f59e0b\")})}(e,l)}}else g||(c=.95*c+.05*p),o.push(f),o.length>4&&o.shift(),g&&(s=o,o=[],a=0,l=h,Z(\"正在听 · \"+(i[t.lang.slice(0,2)]||\"\")+\" · 🎙\",\"#ef4444\"))},me.connect(ge),ge.connect(he.destination),Z(\"正在听 · \"+(i[t.lang.slice(0,2)]||\"\")+\" · \"+(/whisper/i.test(t.asrModel)?\"Whisper\":\"SenseVoice\"),\"#ef4444\")}(J);else{$=new o,$.lang=t.lang,$.continuous=!0,$.interimResults=!0,$.onstart=()=>{Q=0,Z(\"正在听 · \"+(i[t.lang.slice(0,2)]||\"\"),\"#ef4444\")},$.onresult=e=>{let t=\"\";for(let n=e.resultIndex;n<e.results.length;n++){const o=e.results[n];o.isFinal?de(o[0].transcript):t+=o[0].transcript}if(X=t.trim(),clearTimeout(re),X){const e=X;!function(e){const t=ne(e);if(se.push(t),se.length>3&&se.shift(),se.length<3)return;const n=function(e){let t=e[0]||\"\";for(const n of e){let e=0;for(;e<t.length&&e<n.length&&t[e]===n[e];)e++;t=t.slice(0,e)}return t}(se);if(ie&&!n.startsWith(ie))return;const o=te()?14:28;if(n.length-ie.length<o||Date.now()-ae<1600)return;const i=oe(function(e,t){let n=0,o=0;for(;n<e.length&&o<t;)/\\s/.test(e[n])||o++,n++;return e.slice(0,n)}(e,n.length),ie.length);ne(i).length>=ce()&&(ee(i,!!ie),ie=n,ae=Date.now(),le++)}(e),re=setTimeout(()=>function(e){const t=ne(e);if(!(t.length<ce())){if(!ie)return ee(e),ie=t,ae=Date.now(),void(le=1);if(t.startsWith(ie)){const n=oe(e,ie.length);ne(n).length>=ce()&&(ee(n,!0),ie=t,ae=Date.now(),le++)}}}(e),750)}X&&B(X),clearTimeout(Y),X&&(Y=setTimeout(()=>{try{$.stop()}catch(e){}},X.length>80?0:4e3))},$.onerror=e=>{\"no-speech\"!==e.error&&\"aborted\"!==e.error&&(r(\"识别错误\",e.error),Q++,\"not-allowed\"===e.error||\"service-not-allowed\"===e.error?Z(\"Chrome 暂时拒绝了，正在重试（让 Chrome 窗口保持在最前面）\",\"#f59e0b\"):\"network\"===e.error?Z(\"网络不稳，正在重连…\",\"#f59e0b\"):Z(\"识别出错（\"+e.error+\"），正在重试\",\"#f59e0b\"))},$.onend=()=>{X&&(de(X),X=\"\"),q&&setTimeout(pe,Q?Math.min(3e3,400*Q):120)};try{$.start(J)}catch(e){r(\"start 失败\",e),Z(\"启动失败：\"+e.message,\"#f59e0b\"),J=null,setTimeout(pe,1500)}}}}let he=null,ge=null,me=null,we=Promise.resolve();function ye(e){const t=new Uint8Array(e);let n=\"\";for(let e=0;e<t.length;e+=32768)n+=String.fromCharCode.apply(null,t.subarray(e,e+32768));return btoa(n)}const xe=/ご視聴ありがとうございました|ご覧いただきありがとうございます|チャンネル登録|高評価をお願い|^字幕|Thank you for watching|Thanks for watching|Subtitles by/i;function be(){o||t.asrKey&&\"api\"===t.engine?(q=!0,w.textContent=\"暂停\",G=\"\",pe(!0)):Z(\"浏览器不支持语音识别\",\"#f59e0b\")}function Se(){q=!1,w.textContent=\"开始\",clearTimeout(Y);try{$&&$.stop()}catch(e){}!function(){try{ge&&ge.disconnect(),me&&me.disconnect(),he&&he.close()}catch(e){}he=ge=me=null}(),Z(\"已暂停\")}function ve(){Se();try{fe&&fe.getTracks().forEach(e=>e.stop())}catch(e){}l.remove(),delete window.__animeSub}F(),j(),Z(t.apiKey?\"点开始，再播放视频\":\"点 ⚙ 填 API Key\"),window.__animeSub={start:be,stop:Se,destroy:ve,cfg:t,history:L,toggle(){l.style.display=\"none\"===l.style.display?\"\":\"none\"},set(e){Object.assign(t,e),n(),y.textContent=i[t.lang.slice(0,2)]||t.lang}}})();";
+function bookmarkletURL(){
+  let pre = '';
+  if ($('bmWithKey').checked && settings.apiKey){
+    pre = 'window.__animeSubPreset=' + JSON.stringify({ apiKey: settings.apiKey, baseUrl: settings.baseUrl, model: settings.model }) + ';';
+  }
+  return 'javascript:' + encodeURIComponent(pre + OVERLAY_SRC + ';void 0');
+}
+function refreshBookmarklet(){
+  $('bmLink').href = bookmarkletURL();
+  $('bmNoKey').style.display = settings.apiKey ? 'none' : '';
+  $('bmWithKey').parentElement.style.display = settings.apiKey ? '' : 'none';
+}
+$('btnOverlay').onclick = () => { closeSide(); refreshBookmarklet(); openMask('overlayMask'); };
+$('bmWithKey').onchange = refreshBookmarklet;
+$('bmLink').addEventListener('click', e => { e.preventDefault(); toast('请用鼠标把它拖到书签栏上，而不是点击'); });
+$('bmCopy').onclick = async () => { try{ await navigator.clipboard.writeText(bookmarkletURL()); toast('已复制，去书签栏右键“添加网页”粘贴到网址栏'); }catch(e){ toast('复制失败'); } };
+
+/* ================= 启动 ================= */
+(async function init(){
+  document.documentElement.style.setProperty('--zh-size', settings.fontSize + 'px');
+  await DB.open();
+  sessions = await DB.all();
+  sessions.forEach(s => { s.qa = s.qa || []; s.segments = s.segments || []; s.segments.forEach(x => { if (x.status === 'pending') { x.status = 'err'; x.errMsg = '上次没翻译完'; } }); });
+  // 旧版本（单页字幕）数据迁移
+  const old = ls.get('lt_segments', null);
+  if (Array.isArray(old) && old.length){
+    const st = ls.get('lt_settings', {});
+    const s = { id: uid(), title: '之前的记录', scene: st.scene || 'class', lang: st.lang || 'en-GB', topic: st.topic || '',
+      createdAt: old[0].t || Date.now(), updatedAt: Date.now(), summary: '', qa: [],
+      segments: old.map(x => ({ id: uid(), src: x.en || x.src || '', zh: x.zh || '', status: x.zh ? 'done' : 'err', errMsg: x.zh ? '' : '未翻译', t: x.t || Date.now() })) };
+    sessions.push(s); await DB.put(s); ls.del('lt_segments');
+  }
+  try{ if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+  const last = ls.get('lt_lastView', null);
+  viewId = getS(last) ? last : null;
+  renderSide(); renderMain();
+})();
+})();
+</script>
+</body>
+</html>
