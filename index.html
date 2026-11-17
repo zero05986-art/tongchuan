@@ -499,6 +499,22 @@ const DEFAULTS = { preset:'deepseek', baseUrl:PRESETS.deepseek.baseUrl, model:PR
 let settings = Object.assign({}, DEFAULTS, ls.get('lt_settings', {}));
 if (!settings.lastLang || typeof settings.lastLang !== 'object') settings.lastLang = Object.assign({}, DEFAULTS.lastLang);
 const saveSettings = () => ls.set('lt_settings', settings);
+/* 一键导入 Key：打开 网址#groq=gsk_xxx 或 #ds=sk_xxx，自动保存到本设备后从地址栏抹掉（# 后内容不会发给服务器） */
+(function importKeysFromHash(){
+  try {
+    const h = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    let got = [];
+    const g = (h.get('groq') || '').trim();
+    if (/^gsk_\w{20,}$/.test(g)) { settings.asrKey = g; settings.asrEngine = 'groq'; got.push('Groq'); }
+    const d = (h.get('ds') || '').trim();
+    if (/^sk-\w{16,}$/.test(d)) { settings.apiKey = d; settings.preset = 'deepseek'; settings.baseUrl = PRESETS.deepseek.baseUrl; settings.model = PRESETS.deepseek.model; got.push('DeepSeek'); }
+    if (got.length) {
+      saveSettings();
+      history.replaceState(null, '', location.pathname + location.search);
+      setTimeout(() => toast('已自动填好 ' + got.join(' + ') + ' Key，本设备以后不用再填', 3500), 600);
+    }
+  } catch (e) {}
+})();
 
 /* ================= 存储（IndexedDB，失败时退回 localStorage） ================= */
 const DB = {
