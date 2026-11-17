@@ -887,33 +887,60 @@ function startRec(){
 /* ---------- Groq Whisper 识别：麦克风一直录，停顿时整段送去识别（iPad 上比浏览器自带识别稳定得多） ---------- */
 function useWhisper(){ return settings.asrEngine === 'groq' && !!(settings.asrKey || '').trim(); }
 let wMic = null, wAc = null, wProc = null, wSrc = null, wSeg = null, wSid = null, wChain = Promise.resolve(), wPending = 0;
-const VADP = { class:{ endSil:700, minLen:3000, hardSil:1500, maxLen:15000 }, chat:{ endSil:600, minLen:2000, hardSil:1200, maxLen:10000 }, anime:{ endSil:500, minLen:1500, hardSil:1100, maxLen:5000 } };
+/* 切句参数（毫秒）：
+   pause  = 说了 minLen 以上、遇到这么长的停顿就切
+   pause2 = 说了 soft 以上，停顿再短一点也切
+   maxLen = 再长就在最近几秒里最安静的地方切（不会把单词切成两半），剩下的留给下一段 */
+const VADP = {
+  class:{ minLen:4000, pause:450, soft:8000, pause2:250, maxLen:12000, hardSil:1200 },
+  chat: { minLen:2500, pause:400, soft:6000, pause2:250, maxLen:9000,  hardSil:1000 },
+  anime:{ minLen:1500, pause:350, soft:3500, pause2:220, maxLen:6000,  hardSil:900 }
+};
 function startWhisper(sid){
-  wSid = sid;
+  wSid = sid; wCarry = ''; wCtx = '';
   try{ wAc = new (window.AudioContext || window.webkitAudioContext)(); wAc.resume && wAc.resume(); }catch(e){}
   navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } }).then(stream => {
     if (!wantRun || recId !== sid){ stream.getTracks().forEach(t => t.stop()); return; }
     wMic = stream;
     const s = getS(sid); const P = VADP[(s && s.scene) || 'class'] || VADP.class;
     wSrc = wAc.createMediaStreamSource(stream);
-    wProc = wAc.createScriptProcessor(4096, 1, 1);
-    const ratio = wAc.sampleRate / 16000; let pre = [], silent = 0, speech = 0, noise = 0.003;
+    wProc = wAc.createScriptProcessor(2048, 1, 1);
+    const ratio = wAc.sampleRate / 16000;
+    let pre = [], silent = 0, speech = 0, hist = [];
+    // 噪声底：最近约 6 秒里第 15% 低的音量（边说话也会更新，教室噪音变化也能跟上）
+    const noiseFloor = () => { if (hist.length < 8) return 0.004; const a = hist.slice().sort((x, y) => x - y); return a[Math.floor(a.length * 0.15)]; };
+    const cut = (frames, sp) => flushWhisper(frames.map(f => f.y), sp);
     wProc.onaudioprocess = e => {
       const x = e.inputBuffer.getChannelData(0);
       const n = Math.floor(x.length / ratio), y = new Float32Array(n);
       for (let i = 0; i < n; i++){ let a = Math.floor(i * ratio), b = Math.min(x.length, Math.floor((i + 1) * ratio)), t = 0, c = 0; for (let j = a; j < b; j++){ t += x[j]; c++; } y[i] = c ? t / c : 0; }
       let rms = 0; for (let i = 0; i < n; i++) rms += y[i] * y[i]; rms = Math.sqrt(rms / (n || 1));
-      const ms = n / 16, speaking = rms > Math.max(0.008, noise * 2.5);
+      hist.push(rms); if (hist.length > 140) hist.shift();
+      const ms = n / 16, thr = Math.max(0.006, noiseFloor() * 2.2), speaking = rms > thr;
+      const fr = { y, rms };
       if (!wSeg){
-        if (!speaking) noise = noise * 0.95 + rms * 0.05;
-        pre.push(y); if (pre.length > 4) pre.shift();
+        pre.push(fr); if (pre.length > 6) pre.shift();
         if (speaking){ wSeg = pre; pre = []; silent = 0; speech = ms; }
-      } else {
-        wSeg.push(y);
-        if (speaking){ silent = 0; speech += ms; } else silent += ms;
-        const total = wSeg.reduce((t, b) => t + b.length, 0) / 16;
-        setInterim('🎙 正在听… ' + Math.round(total / 1000) + ' 秒');
-        if ((silent >= P.endSil && total >= P.minLen) || silent >= P.hardSil || total >= P.maxLen){ const d = wSeg; wSeg = null; flushWhisper(d, speech); }
+        return;
+      }
+      wSeg.push(fr);
+      if (speaking){ silent = 0; speech += ms; } else silent += ms;
+      const total = wSeg.length * ms;
+      setInterim((wCarry ? wCarry + ' ' : '') + '🎙 ' + Math.round(total / 1000) + ' 秒');
+      if ((silent >= P.pause && total >= P.minLen) || (silent >= P.pause2 && total >= P.soft) || (silent >= P.hardSil && speech >= 600)){
+        const d = wSeg; wSeg = null; cut(d, speech); return;
+      }
+      if (total >= P.maxLen){
+        // 在最后 3 秒里找最安静的一小段（约 0.2 秒窗口）切开，后半截留给下一段
+        const win = Math.max(1, Math.round(200 / ms)), look = Math.round(3000 / ms);
+        let best = wSeg.length - 1, bestV = Infinity;
+        for (let i = Math.max(win, wSeg.length - look); i < wSeg.length - 1; i++){
+          let v = 0; for (let k = i - win + 1; k <= i; k++) v += wSeg[k].rms;
+          if (v < bestV){ bestV = v; best = i; }
+        }
+        const d = wSeg.slice(0, best + 1), rest = wSeg.slice(best + 1);
+        wSeg = rest.length ? rest : null; silent = 0; speech = rest.length * ms;
+        cut(d, P.maxLen);
       }
     };
     wSrc.connect(wProc); wProc.connect(wAc.destination);
@@ -921,7 +948,8 @@ function startWhisper(sid){
   }, err => { stopRec(); toast('没有麦克风权限：iPad 设置 → Safari → 麦克风 → 允许', 5000); });
 }
 function stopWhisper(){
-  if (wSeg){ const d = wSeg; wSeg = null; flushWhisper(d, 1000); }
+  if (wSeg){ const d = wSeg; wSeg = null; flushWhisper(d.map(f => f.y), 1000, true); }
+  else if (wCarry){ wChain = wChain.then(() => { if (wCarry){ addFinal(wCarry, wSid); wCarry = ''; } }); }
   try{ wProc && wProc.disconnect(); wSrc && wSrc.disconnect(); }catch(e){}
   try{ wMic && wMic.getTracks().forEach(t => t.stop()); }catch(e){}
   try{ wAc && wAc.close(); }catch(e){}
@@ -936,16 +964,45 @@ function wavOf(chunks){
   return buf;
 }
 const HALLU = /thank you for watching|thanks for watching|please subscribe|like and subscribe|subtitles by|ご視聴ありがとうございました|チャンネル登録/i;
-function flushWhisper(chunks, speechMs){
-  if (speechMs < 300) return;
+// 识别结果先拼成完整句子再翻译：没说完的半句（结尾没有句号/问号）先挂在字幕区，等下一段接上再一起翻
+let wCarry = '', wCtx = '', wCarryTimer = null;
+const SENT_END = /[.!?。！？…]["'”’)]?$/;
+function wEmit(text, sid){ wCtx = (wCtx + ' ' + text).slice(-300); addFinal(text, sid); }
+// 两段交界处偶尔会重复几个词，去掉重复的开头
+function dropOverlap(prev, text){
+  const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const a = (prev || '').split(/\s+/).filter(Boolean).slice(-10).map(norm), b = text.split(/\s+/);
+  for (let k = Math.min(a.length, b.length, 10); k >= 3; k--){
+    if (a.slice(-k).join(' ') === b.slice(0, k).map(norm).join(' ')) return b.slice(k).join(' ');
+  }
+  return text;
+}
+function wTake(text, sid, force){
+  text = dropOverlap(wCarry || wCtx, text);
+  let all = (wCarry ? wCarry + ' ' : '') + text; wCarry = '';
+  all = all.replace(/\s+/g, ' ').trim(); if (!all) return;
+  const s = getS(sid), cjk = s && isCJK(s.lang);
+  const size = t => cjk ? t.replace(/\s/g, '').length : t.split(' ').length;
+  if (force || SENT_END.test(all)){ wEmit(all, sid); return; }
+  // 没说完：把前面已经说完的整句先翻，剩下半句留着
+  const m = all.match(cjk ? /^(.*[。！？!?])(.+)$/ : /^(.*[.!?]["'”’)]?)\s+(.+)$/);
+  if (m && size(m[1]) >= (cjk ? 6 : 4)){ wEmit(m[1], sid); all = m[2].trim(); }
+  if (size(all) > (cjk ? 45 : 28)){ wEmit(all, sid); return; }   // 一直没句号的长串，也不再等
+  wCarry = all;
+  clearTimeout(wCarryTimer);
+  wCarryTimer = setTimeout(() => { if (wCarry && !wSeg && !wPending){ const c = wCarry; wCarry = ''; wEmit(c, sid); if (recId === sid) setInterim('🎙 正在听…'); } }, 2500);
+}
+function flushWhisper(chunks, speechMs, force){
+  if (speechMs < 300 && !force) return;
   const sid = wSid, s = getS(sid); if (!s) return;
   const wav = wavOf(chunks); wPending++;
-  if (recId === sid) setInterim('⏳ 识别中…');
+  if (recId === sid && !wSeg) setInterim((wCarry ? wCarry + ' ' : '') + '⏳');
   wChain = wChain.then(() => groqTranscribe(wav, s)).then(text => {
     wPending--;
     text = (text || '').trim();
-    if (text && !HALLU.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) addFinal(text, sid);
-    if (recId === sid && !wSeg) setInterim(wPending ? '⏳ 识别中…' : '🎙 正在听…');
+    if (text && !HALLU.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force);
+    else if (force && wCarry){ wTake('', sid, true); }
+    if (recId === sid && !wSeg) setInterim(wCarry ? wCarry + ' …' : (wPending ? '⏳ 识别中…' : '🎙 正在听…'));
   }, e => {
     wPending--;
     toast('识别失败：' + (/401/.test(e.message) ? 'Groq Key 不对' : /429/.test(e.message) ? '请求太频繁，几秒后自动恢复' : /Failed to fetch|Load failed/i.test(e.message) ? '连不上 Groq（检查网络）' : e.message), 3500);
@@ -959,7 +1016,8 @@ async function groqTranscribe(wav, s){
   fd.append('temperature', '0');
   // 把课程名和术语表交给 Whisper，帮助它认对专业词
   const terms = (settings.glossary || '').split('\n').map(l => l.split('=')[0].trim()).filter(Boolean).join(', ');
-  const hint = [s.topic, terms].filter(Boolean).join('. ').slice(0, 400);
+  // 只给课程名和术语（实测把上一句原文也塞进去，Whisper 会重复上一句或被带偏，所以不放）
+  const hint = [s.topic, terms].filter(Boolean).join('. ').slice(0, 300);
   if (hint) fd.append('prompt', hint);
   const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + settings.asrKey.trim() }, body: fd });
   if (!r.ok) throw new Error('HTTP ' + r.status);
