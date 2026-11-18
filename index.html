@@ -687,6 +687,13 @@ function setLive(t){
   const show = !!t && viewId === recId && tab === 'subs';
   $('live').style.display = show ? '' : 'none';
   $('liveText').textContent = t || '';
+  // 正在录音但还没有第一句时，别再显示“点下面的开始记录”，免得以为没在工作
+  const em = $('subsEmpty'), rec = viewId && viewId === recId && wantRun;
+  if (em && em.dataset.rec !== String(!!rec)){
+    em.dataset.rec = String(!!rec);
+    em.innerHTML = rec ? '<div class="big">🎙</div>正在听… 老师说完一句话，字幕就会出现在这里<br><span style="font-size:13px;opacity:.7">第一句大约 5–10 秒；新建记录时填上课程名，专业词会认得更准</span>'
+                       : '<div class="big">🎙</div>点下面的 <b>开始记录</b>，字幕会出现在这里';
+  }
 }
 let stick = true;
 ['pSubs','pQA'].forEach(id => $(id).addEventListener('scroll', () => {
@@ -888,59 +895,58 @@ function startRec(){
 function useWhisper(){ return settings.asrEngine === 'groq' && !!(settings.asrKey || '').trim(); }
 let wMic = null, wAc = null, wProc = null, wSrc = null, wSeg = null, wSid = null, wChain = Promise.resolve(), wPending = 0;
 /* 切句参数（毫秒）：
-   pause  = 说了 minLen 以上、遇到这么长的停顿就切
-   pause2 = 说了 soft 以上，停顿再短一点也切
-   maxLen = 再长就在最近几秒里最安静的地方切（不会把单词切成两半），剩下的留给下一段 */
+   pause  = 录了 minLen 以上、遇到这么长的停顿就切
+   pause2 = 录了 soft 以上，停顿再短一点也切
+   maxLen = 再长就在最近 3 秒里最安静的地方切（不会把单词切成两半），剩下的留给下一段
+   不再用“音量够不够大”判断有没有人说话（坐后排、老师声音小时会一直判成没人说话）：
+   一直录、按停顿切，交给 Whisper 判断，没人说话的段落由它的 no_speech 概率过滤掉 */
 const VADP = {
-  class:{ minLen:4000, pause:450, soft:8000, pause2:250, maxLen:12000, hardSil:1200 },
-  chat: { minLen:2500, pause:400, soft:6000, pause2:250, maxLen:9000,  hardSil:1000 },
-  anime:{ minLen:1500, pause:350, soft:3500, pause2:220, maxLen:6000,  hardSil:900 }
+  class:{ minLen:4000, pause:450, soft:8000, pause2:250, maxLen:12000 },
+  chat: { minLen:2500, pause:400, soft:6000, pause2:250, maxLen:9000 },
+  anime:{ minLen:1500, pause:350, soft:3500, pause2:220, maxLen:6000 }
 };
 function startWhisper(sid){
   wSid = sid; wCarry = ''; wCtx = '';
   try{ wAc = new (window.AudioContext || window.webkitAudioContext)(); wAc.resume && wAc.resume(); }catch(e){}
-  navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } }).then(stream => {
+  navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:true, autoGainControl:true } }).then(stream => {
     if (!wantRun || recId !== sid){ stream.getTracks().forEach(t => t.stop()); return; }
     wMic = stream;
     const s = getS(sid); const P = VADP[(s && s.scene) || 'class'] || VADP.class;
     wSrc = wAc.createMediaStreamSource(stream);
     wProc = wAc.createScriptProcessor(2048, 1, 1);
     const ratio = wAc.sampleRate / 16000;
-    let pre = [], silent = 0, speech = 0, hist = [];
-    // 噪声底：最近约 6 秒里第 15% 低的音量（边说话也会更新，教室噪音变化也能跟上）
-    const noiseFloor = () => { if (hist.length < 8) return 0.004; const a = hist.slice().sort((x, y) => x - y); return a[Math.floor(a.length * 0.15)]; };
-    const cut = (frames, sp) => flushWhisper(frames.map(f => f.y), sp);
+    let silent = 0, hist = [], hp = 0, hpPrev = 0;
+    // 噪声底：最近约 8 秒里第 10% 低的音量；比它明显大（1.6 倍）就算在说话。全是相对值，声音再小也能切句
+    const floor = () => { if (hist.length < 10) return 1e-4; const a = hist.slice().sort((x, y) => x - y); return a[Math.floor(a.length * 0.1)]; };
+    wSeg = [];
     wProc.onaudioprocess = e => {
       const x = e.inputBuffer.getChannelData(0);
       const n = Math.floor(x.length / ratio), y = new Float32Array(n);
       for (let i = 0; i < n; i++){ let a = Math.floor(i * ratio), b = Math.min(x.length, Math.floor((i + 1) * ratio)), t = 0, c = 0; for (let j = a; j < b; j++){ t += x[j]; c++; } y[i] = c ? t / c : 0; }
-      let rms = 0; for (let i = 0; i < n; i++) rms += y[i] * y[i]; rms = Math.sqrt(rms / (n || 1));
-      hist.push(rms); if (hist.length > 140) hist.shift();
-      const ms = n / 16, thr = Math.max(0.006, noiseFloor() * 2.2), speaking = rms > thr;
-      const fr = { y, rms };
-      if (!wSeg){
-        pre.push(fr); if (pre.length > 6) pre.shift();
-        if (speaking){ wSeg = pre; pre = []; silent = 0; speech = ms; }
-        return;
-      }
-      wSeg.push(fr);
-      if (speaking){ silent = 0; speech += ms; } else silent += ms;
-      const total = wSeg.length * ms;
-      setInterim((wCarry ? wCarry + ' ' : '') + '🎙 ' + Math.round(total / 1000) + ' 秒');
-      if ((silent >= P.pause && total >= P.minLen) || (silent >= P.pause2 && total >= P.soft) || (silent >= P.hardSil && speech >= 600)){
-        const d = wSeg; wSeg = null; cut(d, speech); return;
+      // 只看人声频段的音量：先滤掉 250Hz 以下的低频（空调、通风、桌子震动这类嗡嗡声）
+      let rms = 0; for (let i = 0; i < n; i++){ hp = 0.91 * (hp + y[i] - hpPrev); hpPrev = y[i]; rms += hp * hp; } rms = Math.sqrt(rms / (n || 1));
+      hist.push(rms); if (hist.length > 190) hist.shift();
+      // speaking：明显在说话（用来找停顿）；sp：有点声音（声音很小、离得远时也算，用来决定要不要送去识别）
+      const ms = n / 16, fl = floor(), speaking = rms > fl * 1.6 + 1e-5, weak = rms > fl * 1.25 + 1e-5;
+      if (!wSeg) wSeg = [];
+      wSeg.push({ y, rms, sp: weak });
+      // 开头一直是安静的就别攒着（只留最后 0.3 秒当开头）
+      if (!weak && wSeg.length * ms > 1500 && !wSeg.some(f => f.sp)) wSeg = wSeg.slice(-Math.round(300 / ms));
+      if (speaking) silent = 0; else silent += ms;
+      const total = wSeg.length * ms, any = wSeg.some(f => f.sp);
+      if (any) setInterim((wCarry ? wCarry + ' ' : '') + '🎙 ' + Math.round(total / 1000) + ' 秒');
+      if (any && ((silent >= P.pause && total >= P.minLen) || (silent >= P.pause2 && total >= P.soft))){
+        const d = wSeg; wSeg = []; flushWhisper(d); return;
       }
       if (total >= P.maxLen){
-        // 在最后 3 秒里找最安静的一小段（约 0.2 秒窗口）切开，后半截留给下一段
         const win = Math.max(1, Math.round(200 / ms)), look = Math.round(3000 / ms);
         let best = wSeg.length - 1, bestV = Infinity;
         for (let i = Math.max(win, wSeg.length - look); i < wSeg.length - 1; i++){
           let v = 0; for (let k = i - win + 1; k <= i; k++) v += wSeg[k].rms;
           if (v < bestV){ bestV = v; best = i; }
         }
-        const d = wSeg.slice(0, best + 1), rest = wSeg.slice(best + 1);
-        wSeg = rest.length ? rest : null; silent = 0; speech = rest.length * ms;
-        cut(d, P.maxLen);
+        const d = wSeg.slice(0, best + 1); wSeg = wSeg.slice(best + 1); silent = 0;
+        flushWhisper(d);
       }
     };
     wSrc.connect(wProc); wProc.connect(wAc.destination);
@@ -948,19 +954,22 @@ function startWhisper(sid){
   }, err => { stopRec(); toast('没有麦克风权限：iPad 设置 → Safari → 麦克风 → 允许', 5000); });
 }
 function stopWhisper(){
-  if (wSeg){ const d = wSeg; wSeg = null; flushWhisper(d.map(f => f.y), 1000, true); }
+  if (wSeg && wSeg.some(f => f.sp)){ const d = wSeg; flushWhisper(d, true); }
   else if (wCarry){ wChain = wChain.then(() => { if (wCarry){ addFinal(wCarry, wSid); wCarry = ''; } }); }
+  wSeg = null;
   try{ wProc && wProc.disconnect(); wSrc && wSrc.disconnect(); }catch(e){}
   try{ wMic && wMic.getTracks().forEach(t => t.stop()); }catch(e){}
   try{ wAc && wAc.close(); }catch(e){}
   wMic = wAc = wProc = wSrc = null;
 }
+// 生成 WAV；顺便把音量放大到接近满格（老师离得远、声音小时 Whisper 也能听清）
 function wavOf(chunks){
-  let len = 0; chunks.forEach(c => len += c.length);
+  let len = 0, peak = 0; chunks.forEach(c => { len += c.length; for (let i = 0; i < c.length; i++){ const v = Math.abs(c[i]); if (v > peak) peak = v; } });
+  const gain = peak > 0 ? Math.min(40, 0.9 / peak) : 1;
   const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf), w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
   w(0,'RIFF'); v.setUint32(4, 36 + len * 2, true); w(8,'WAVE'); w(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
   v.setUint32(24,16000,true); v.setUint32(28,32000,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,'data'); v.setUint32(40, len * 2, true);
-  let o = 44; chunks.forEach(c => { for (let i = 0; i < c.length; i++, o += 2){ const q = Math.max(-1, Math.min(1, c[i])); v.setInt16(o, q < 0 ? q * 0x8000 : q * 0x7fff, true); } });
+  let o = 44; chunks.forEach(c => { for (let i = 0; i < c.length; i++, o += 2){ const q = Math.max(-1, Math.min(1, c[i] * gain)); v.setInt16(o, q < 0 ? q * 0x8000 : q * 0x7fff, true); } });
   return buf;
 }
 const HALLU = /thank you for watching|thanks for watching|please subscribe|like and subscribe|subtitles by|ご視聴ありがとうございました|チャンネル登録/i;
@@ -990,19 +999,20 @@ function wTake(text, sid, force){
   if (size(all) > (cjk ? 45 : 28)){ wEmit(all, sid); return; }   // 一直没句号的长串，也不再等
   wCarry = all;
   clearTimeout(wCarryTimer);
-  wCarryTimer = setTimeout(() => { if (wCarry && !wSeg && !wPending){ const c = wCarry; wCarry = ''; wEmit(c, sid); if (recId === sid) setInterim('🎙 正在听…'); } }, 2500);
+  wCarryTimer = setTimeout(() => { if (wCarry && !(wSeg && wSeg.some(f => f.sp)) && !wPending){ const c = wCarry; wCarry = ''; wEmit(c, sid); if (recId === sid) setInterim('🎙 正在听…'); } }, 2500);
 }
-function flushWhisper(chunks, speechMs, force){
-  if (speechMs < 300 && !force) return;
+function flushWhisper(frames, force){
   const sid = wSid, s = getS(sid); if (!s) return;
-  const wav = wavOf(chunks); wPending++;
-  if (recId === sid && !wSeg) setInterim((wCarry ? wCarry + ' ' : '') + '⏳');
+  const sp = frames.reduce((t, f) => t + (f.sp ? f.y.length / 16 : 0), 0);   // 其中“像在说话”的时长（毫秒）
+  if (sp < 400 && !force) return;
+  const wav = wavOf(frames.map(f => f.y)); wPending++;
+  if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim((wCarry ? wCarry + ' ' : '') + '⏳');
   wChain = wChain.then(() => groqTranscribe(wav, s)).then(text => {
     wPending--;
     text = (text || '').trim();
     if (text && !HALLU.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force);
     else if (force && wCarry){ wTake('', sid, true); }
-    if (recId === sid && !wSeg) setInterim(wCarry ? wCarry + ' …' : (wPending ? '⏳ 识别中…' : '🎙 正在听…'));
+    if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim(wCarry ? wCarry + ' …' : (wPending ? '⏳ 识别中…' : '🎙 正在听…'));
   }, e => {
     wPending--;
     toast('识别失败：' + (/401/.test(e.message) ? 'Groq Key 不对' : /429/.test(e.message) ? '请求太频繁，几秒后自动恢复' : /Failed to fetch|Load failed/i.test(e.message) ? '连不上 Groq（检查网络）' : e.message), 3500);
@@ -1014,6 +1024,7 @@ async function groqTranscribe(wav, s){
   fd.append('model', 'whisper-large-v3-turbo');
   fd.append('language', (s.lang || 'en').slice(0, 2));
   fd.append('temperature', '0');
+  fd.append('response_format', 'verbose_json');
   // 把课程名和术语表交给 Whisper，帮助它认对专业词
   const terms = (settings.glossary || '').split('\n').map(l => l.split('=')[0].trim()).filter(Boolean).join(', ');
   // 只给课程名和术语（实测把上一句原文也塞进去，Whisper 会重复上一句或被带偏，所以不放）
@@ -1021,7 +1032,11 @@ async function groqTranscribe(wav, s){
   if (hint) fd.append('prompt', hint);
   const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + settings.asrKey.trim() }, body: fd });
   if (!r.ok) throw new Error('HTTP ' + r.status);
-  return (await r.json()).text || '';
+  const j = await r.json();
+  if (!Array.isArray(j.segments)) return j.text || '';
+  // 去掉 Whisper 认为“没人说话”或明显瞎编的小段
+  return j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2)
+    .map(g => g.text).join(' ').replace(/\s+/g, ' ').trim();
 }
 
 async function keepAwake(){ try{ if ('wakeLock' in navigator && wantRun) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){} }
