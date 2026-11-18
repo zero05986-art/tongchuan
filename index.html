@@ -101,6 +101,7 @@ input,select,textarea{font:inherit;color:var(--text)}
 .seg .zh.pending{color:var(--faint)}
 .seg .zh.err{color:var(--rec);font-size:14px;cursor:pointer}
 .hide-src .seg .src{display:none}
+.seg.fixed .src::after{content:' ✓已校对';font-size:11px;color:#16a34a;white-space:nowrap}
 .topic-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .topic-chips button{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:5px 11px;font-size:13px;color:var(--text)}
 .topic-chips button.on{border-color:#6366f1;color:#6366f1}
@@ -420,7 +421,9 @@ input,select,textarea{font:inherit;color:var(--text)}
     <button id="mRename">✎ 重命名</button>
     <button id="mToggleSrc">👁 隐藏原文</button>
     <button id="mRetry">↻ 重试翻译失败的句子</button>
-    <button id="mShare">📤 分享给朋友 / AI（原文+译文+笔记）</button>
+    <button id="mWord">📄 导出 Word（笔记 + 原文 + 译文）</button>
+    <button id="mShare">📤 分享 Word 给朋友</button>
+    <button id="mAudio">🎧 导出录音 (.wav)</button>
     <button id="mCopyAI">🤖 复制给 AI（带提问提示）</button>
     <button id="mCopy">⧉ 复制全部字幕</button>
     <button id="mTxt">⇩ 下载字幕 (.txt)</button>
@@ -533,8 +536,12 @@ const DB = {
     return new Promise(res => {
       try{
         if (!window.indexedDB) return res();
-        const r = indexedDB.open('lt-db', 1);
-        r.onupgradeneeded = () => r.result.createObjectStore('sessions', { keyPath:'id' });
+        const r = indexedDB.open('lt-db', 2);
+        r.onupgradeneeded = () => {
+          const d = r.result;
+          if (!d.objectStoreNames.contains('sessions')) d.createObjectStore('sessions', { keyPath:'id' });
+          if (!d.objectStoreNames.contains('audio')) d.createObjectStore('audio', { keyPath:'k' });   // 每段录音：k = 记录id|段id
+        };
         r.onsuccess = () => { this.db = r.result; res(); };
         r.onerror = () => res(); r.onblocked = () => res();
       }catch(e){ res(); }
@@ -559,7 +566,25 @@ const DB = {
       }catch(e){ res(); }
     });
   },
+  // ---- 录音（μ-law 压缩的 16kHz 单声道，约 1MB/分钟）----
+  audPut(rec){
+    if (!this.db) return Promise.resolve();
+    return new Promise(res => { try{ const tx = this.db.transaction('audio', 'readwrite'); tx.objectStore('audio').put(rec); tx.oncomplete = () => res(); tx.onerror = () => res(); }catch(e){ res(); } });
+  },
+  audGet(k){
+    if (!this.db) return Promise.resolve(null);
+    return new Promise(res => { try{ const q = this.db.transaction('audio', 'readonly').objectStore('audio').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }catch(e){ res(null); } });
+  },
+  audList(sid){
+    if (!this.db) return Promise.resolve([]);
+    return new Promise(res => { try{ const q = this.db.transaction('audio', 'readonly').objectStore('audio').getAll(IDBKeyRange.bound(sid + '|', sid + '|\uffff')); q.onsuccess = () => res((q.result || []).sort((a, b) => a.t - b.t)); q.onerror = () => res([]); }catch(e){ res([]); } });
+  },
+  audDel(sid){
+    if (!this.db) return Promise.resolve();
+    return new Promise(res => { try{ const tx = this.db.transaction('audio', 'readwrite'); tx.objectStore('audio').delete(IDBKeyRange.bound(sid + '|', sid + '|\uffff')); tx.oncomplete = () => res(); tx.onerror = () => res(); }catch(e){ res(); } });
+  },
   del(id){
+    this.audDel(id);
     if (!this.db){ ls.set('lt_sessions_fb', sessions); return Promise.resolve(); }
     return new Promise(res => {
       try{
@@ -689,6 +714,8 @@ function renderSeg(x, s){
   }
   el.querySelector('.tm').textContent = hm(x.t);
   el.querySelector('.src').textContent = x.src;
+  el.querySelector('.src').title = x.src0 ? '校对前：' + x.src0 : '';
+  el.classList.toggle('fixed', !!x.src0 || !!x.fixed);
   const zh = el.querySelector('.zh');
   zh.className = 'zh' + (x.status === 'pending' && !x.zh ? ' pending' : '') + (x.status === 'err' ? ' err' : '');
   zh.textContent = x.status === 'err' ? '⚠ ' + (x.errMsg || '翻译失败') + ' · 点这里重试' : (x.zh || '翻译中…');
@@ -859,12 +886,13 @@ function pump(){
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, wantRun = false, interim = '', flushTimer = null, lastFinal = '', wakeLock = null, recRestarts = 0;
 
-function addFinal(text, sid){
+function addFinal(text, sid, meta){
   const s = getS(sid || recId); if (!s) return;
   text = (text || '').replace(/\s+/g, ' ').trim();
   if (!text || text === lastFinal) return;
   lastFinal = text;
   const x = { id: uid(), src: text, zh: '', status: 'pending', t: Date.now() };
+  if (meta){ if (meta.au && meta.au.length) x.au = meta.au.slice(); if (meta.conf != null) x.conf = meta.conf; }
   s.segments.push(x); markDirty(s);
   renderSeg(x, s); translate(x, s); scrollEnd();
   if (viewId === s.id) renderHeader();
@@ -994,12 +1022,27 @@ function startWhisper(sid){
 }
 function stopWhisper(){
   if (wSeg && wSeg.some(f => f.sp)){ const d = wSeg; flushWhisper(d, true); }
-  else if (wCarry){ wChain = wChain.then(() => { if (wCarry){ addFinal(wCarry, wSid); wCarry = ''; } }); }
+  else if (wCarry){ wChain = wChain.then(() => { if (wCarry){ addFinal(wCarry, wSid, { au: wCarryAu, conf: wCarryConf }); wCarry = ''; wCarryAu = []; } }); }
   wSeg = null;
   try{ wProc && wProc.disconnect(); wSrc && wSrc.disconnect(); }catch(e){}
   try{ wMic && wMic.getTracks().forEach(t => t.stop()); }catch(e){}
   try{ wAc && wAc.close(); }catch(e){}
   wMic = wAc = wProc = wSrc = null;
+}
+// μ-law：把录音压成 8 位存起来（体积减半，听感几乎不变）
+function muEncode(chunks){
+  let len = 0; chunks.forEach(c => len += c.length);
+  const out = new Uint8Array(len); let o = 0;
+  chunks.forEach(c => { for (let i = 0; i < c.length; i++){
+    let x = Math.max(-1, Math.min(1, c[i])), sgn = x < 0 ? 0x80 : 0; x = Math.abs(x);
+    const m = Math.log(1 + 255 * x) / Math.log(256); out[o++] = sgn | Math.round(m * 127);
+  } });
+  return out.buffer;
+}
+function muDecode(buf){
+  const u = new Uint8Array(buf), f = new Float32Array(u.length);
+  for (let i = 0; i < u.length; i++){ const v = (Math.pow(256, (u[i] & 0x7f) / 127) - 1) / 255; f[i] = u[i] & 0x80 ? -v : v; }
+  return f;
 }
 // 生成 WAV；顺便把音量放大到接近满格（老师离得远、声音小时 Whisper 也能听清）
 function wavOf(chunks){
@@ -1013,9 +1056,9 @@ function wavOf(chunks){
 }
 const HALLU = /thank you for watching|thanks for watching|please subscribe|like and subscribe|subtitles by|ご視聴ありがとうございました|チャンネル登録/i;
 // 识别结果先拼成完整句子再翻译：没说完的半句（结尾没有句号/问号）先挂在字幕区，等下一段接上再一起翻
-let wCarry = '', wCtx = '', wCarryTimer = null;
+let wCarry = '', wCtx = '', wCarryTimer = null, wCarryAu = [], wCarryConf = 0;
 const SENT_END = /[.!?。！？…]["'”’)]?$/;
-function wEmit(text, sid){ wCtx = (wCtx + ' ' + text).slice(-300); addFinal(text, sid); }
+function wEmit(text, sid, au, conf){ wCtx = (wCtx + ' ' + text).slice(-300); addFinal(text, sid, { au, conf }); }
 // 两段交界处偶尔会重复几个词，去掉重复的开头
 function dropOverlap(prev, text){
   const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
@@ -1025,31 +1068,37 @@ function dropOverlap(prev, text){
   }
   return text;
 }
-function wTake(text, sid, force){
+function wTake(text, sid, force, ck){
   text = dropOverlap(wCarry || wCtx, text);
+  // 这句话来自哪几段录音、识别把握多大（之后“校对”时要用）
+  const au = wCarryAu.concat(ck && ck.id ? [ck.id] : []), conf = Math.min(wCarry ? wCarryConf : 0, ck && ck.conf != null ? ck.conf : 0);
+  wCarryAu = []; wCarryConf = 0;
   let all = (wCarry ? wCarry + ' ' : '') + text; wCarry = '';
   all = all.replace(/\s+/g, ' ').trim(); if (!all) return;
   const s = getS(sid), cjk = s && isCJK(s.lang);
   const size = t => cjk ? t.replace(/\s/g, '').length : t.split(' ').length;
-  if (force || SENT_END.test(all)){ wEmit(all, sid); return; }
+  if (force || SENT_END.test(all)){ wEmit(all, sid, au, conf); return; }
   // 没说完：把前面已经说完的整句先翻，剩下半句留着
   const m = all.match(cjk ? /^(.*[。！？!?])(.+)$/ : /^(.*[.!?]["'”’)]?)\s+(.+)$/);
-  if (m && size(m[1]) >= (cjk ? 6 : 4)){ wEmit(m[1], sid); all = m[2].trim(); }
-  if (size(all) > (cjk ? 45 : 28)){ wEmit(all, sid); return; }   // 一直没句号的长串，也不再等
-  wCarry = all;
+  if (m && size(m[1]) >= (cjk ? 6 : 4)){ wEmit(m[1], sid, au, conf); all = m[2].trim(); }
+  if (size(all) > (cjk ? 45 : 28)){ wEmit(all, sid, au, conf); return; }   // 一直没句号的长串，也不再等
+  wCarry = all; wCarryAu = ck && ck.id ? [ck.id] : au.slice(-1); wCarryConf = ck && ck.conf != null ? ck.conf : conf;
   clearTimeout(wCarryTimer);
-  wCarryTimer = setTimeout(() => { if (wCarry && !(wSeg && wSeg.some(f => f.sp)) && !wPending){ const c = wCarry; wCarry = ''; wEmit(c, sid); if (recId === sid) setInterim('🎙 正在听…'); } }, 2500);
+  wCarryTimer = setTimeout(() => { if (wCarry && !(wSeg && wSeg.some(f => f.sp)) && !wPending){ const c = wCarry, a = wCarryAu, cf = wCarryConf; wCarry = ''; wCarryAu = []; wCarryConf = 0; wEmit(c, sid, a, cf); if (recId === sid) setInterim('🎙 正在听…'); } }, 2500);
 }
 function flushWhisper(frames, force){
   const sid = wSid, s = getS(sid); if (!s) return;
   const sp = frames.reduce((t, f) => t + (f.sp ? f.y.length / 16 : 0), 0);   // 其中“像在说话”的时长（毫秒）
   if (sp < 400 && !force) return;
-  const wav = wavOf(frames.map(f => f.y)); wPending++;
+  const pcm = frames.map(f => f.y), wav = wavOf(pcm); wPending++;
+  // 把这段录音存下来（课后可以导出录音，也能在“校对”时重新听）
+  const ck = { id: uid(), conf: null };
+  DB.audPut({ k: sid + '|' + ck.id, sid, id: ck.id, t: Date.now(), mu: muEncode(pcm) });
   if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim((wCarry ? wCarry + ' ' : '') + '⏳');
-  wChain = wChain.then(() => groqTranscribe(wav, s)).then(text => {
+  wChain = wChain.then(() => groqTranscribe(wav, s, ck)).then(text => {
     wPending--;
     text = (text || '').trim();
-    if (text && !HALLU.test(text) && !/^(you|thank you|thanks|bye|okay|ok|so|um|uh)[.!?]?$/i.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force);
+    if (text && !HALLU.test(text) && !/^(you|thank you|thanks|bye|okay|ok|so|um|uh)[.!?]?$/i.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force, ck);
     else if (force && wCarry){ wTake('', sid, true); }
     if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim(wCarry ? wCarry + ' …' : (wPending ? '⏳ 识别中…' : '🎙 正在听…'));
   }, e => {
@@ -1075,7 +1124,7 @@ function asrHint(s, terms){
   if (!parts.length && !cjkLang) parts.push('A university lecture.');
   return parts.join('. ').replace(/\s+/g, ' ').trim().slice(0, 300);
 }
-async function groqTranscribe(wav, s){
+async function groqTranscribe(wav, s, ck, extraPrompt){
   const fd = new FormData();
   fd.append('file', new Blob([wav], { type:'audio/wav' }), 'audio.wav');
   fd.append('model', 'whisper-large-v3');   // 完整版比 turbo 更抗噪
@@ -1085,15 +1134,16 @@ async function groqTranscribe(wav, s){
   // 把课程名和术语表交给 Whisper，帮助它认对专业词
   const terms = (settings.glossary || '').split('\n').map(l => l.split('=')[0].trim()).filter(Boolean).join(', ');
   // 只给课程名和术语（实测把上一句原文也塞进去，Whisper 会重复上一句或被带偏，所以不放）
-  const hint = asrHint(s, terms);
+  const hint = (asrHint(s, terms) + (extraPrompt ? ' ' + extraPrompt : '')).trim().slice(0, 600);
   if (hint) fd.append('prompt', hint);
   const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + settings.asrKey.trim() }, body: fd });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const j = await r.json();
   if (!Array.isArray(j.segments)) return j.text || '';
   // 去掉 Whisper 认为“没人说话”或明显瞎编的小段
-  let out = j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2)
-    .map(g => g.text).join(' ').replace(/\s+/g, ' ').trim();
+  const keep = j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2);
+  if (ck && keep.length) ck.conf = Math.min(...keep.map(g => g.avg_logprob));
+  let out = keep.map(g => g.text).join(' ').replace(/\s+/g, ' ').trim();
   // 英文课却识别出了中文（多半是旁边有人说中文或噪音），把中文部分去掉
   if (!isCJK(s.lang) && /[\u4e00-\u9fff\u3040-\u30ff]/.test(out)) out = out.replace(/[\u3000-\u303f\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef]+/g, ' ').replace(/\s+/g, ' ').replace(/\s+([.,!?;:])/g, '$1').replace(/^[.,!?;:\s]+/, '').trim();
   return out;
@@ -1122,7 +1172,8 @@ function stopRec(){
   if (rec){ try{ rec.stop(); }catch(e){} }
   stopWhisper();
   // onend 可能稍后才触发：先把未定稿的内容存下
-  if (interim){ addFinal(interim); setInterim(''); }
+  // 只有浏览器自带识别的“半句”才是真的话；Whisper 模式下这里是“🎙 5 秒”这类状态提示，不能存成字幕
+  if (interim){ if (rec) addFinal(interim); setInterim(''); }
   try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock = null;
   recId = null; rec = null;
   const s = getS(was); if (s) markDirty(s);
@@ -1181,7 +1232,7 @@ function md(src){
   (src || '').split('\n').forEach(raw => {
     const l = raw.replace(/\s+$/, ''); let m;
     if ((m = l.match(/^(#{1,4})\s+(.*)/))){ close(); const n = Math.max(2, Math.min(5, m[1].length)); html += '<h' + n + '>' + inline(m[2]) + '</h' + n + '>'; }
-    else if ((m = l.match(/^\s*[-*+•]\s+(.*)/))){ if (list !== 'ul'){ close(); html += '<ul>'; list = 'ul'; } html += '<li>' + inline(m[1]) + '</li>'; }
+    else if ((m = l.match(/^(\s*)[-*+•▶]\s+(.*)/))){ if (list !== 'ul'){ close(); html += '<ul>'; list = 'ul'; } const lv = Math.min(3, Math.floor(m[1].replace(/\t/g, '  ').length / 2)); html += '<li' + (lv ? ' style="margin-left:' + (lv * 1.4) + 'em;list-style:circle"' : '') + '>' + inline(m[2]) + '</li>'; }
     else if ((m = l.match(/^\s*\d+[.)、]\s+(.*)/))){ if (list !== 'ol'){ close(); html += '<ol>'; list = 'ol'; } html += '<li>' + inline(m[1]) + '</li>'; }
     else if ((m = l.match(/^>\s?(.*)/))){ close(); html += '<blockquote>' + inline(m[1]) + '</blockquote>'; }
     else if (/^\s*(-{3,}|\*{3,})\s*$/.test(l)){ close(); }
@@ -1210,14 +1261,22 @@ function sumPrompt(s){
     '## 剧情梗概\n## 出场角色（名字用通行中文译名）\n## 精彩台词（原文 + 中文，5-8 句）\n## 语言学习：值得学的' + L + '词句（原文、读音/假名、意思、用法）' + rule;
   if (s.scene === 'chat') return '下面是一段' + L + '对话' + topic + '的语音识别稿。请整理成中文纪要，包含这些部分：\n' +
     '## 一句话概括\n## 讨论要点\n## 决定与待办（谁、做什么、何时）\n## 关键信息（数字、日期、名字）\n## 值得学的' + L + '表达' + rule;
-  return '下面是一节大学课程' + topic + '的' + L + '语音识别逐字稿，方括号是从开课起的时间。请为一名中国留学生写一份课后复习笔记，包含这些部分：\n' +
-    '## 一句话概括\n' +
-    '## 本节结构（按时间顺序，标出大致时间点）\n' +
-    '## 核心知识点（每点讲清是什么、为什么、怎么用；有公式就用文字写出来；有例子就带上）\n' +
-    '## 重要术语（格式：- **英文原词** 中文译名：一句话解释）\n' +
-    '## 老师强调的重点、可能的考点、作业和通知\n' +
-    '## 需要课后核对的地方（识别不清或讲得含糊的内容）\n' +
-    '## 自测题（3-5 题，每题附简短答案）' + rule;
+  return '下面是一节大学课程' + topic + '的' + L + '课堂逐字稿（方括号是从开课起的时间），已经过一轮校对。请为一名中国留学生写一份内容丰富、结构清晰的中英双语课后复习笔记。\n\n' +
+    '格式要求：\n' +
+    '- 用 Markdown：一级部分用“## 一、…”这样带中文序号的标题，小节用“### 1. …”；列表用“- ”，下级要点缩进两个空格再写“- ”。\n' +
+    '- 每个知识点先写英文原词，再写中文；难的地方用一两句中文解释清楚。\n' +
+    '- 不要用表格；重点词用 **加粗**；公式用文字或简单符号写出，并解释每个符号。\n' +
+    '- 内容要具体、充实：老师举的例子、数字、步骤、原因都要写进去，不要只写空泛的标题。\n\n' +
+    '必须包含这些部分（没有相关内容的部分写“本节未涉及”）：\n' +
+    '## 一、本节概览（一句话概括 + 本节要解决的问题 + 3-5 条学习目标）\n' +
+    '## 二、课程脉络（按时间顺序列出各段讲了什么，标出大致时间点）\n' +
+    '## 三、核心知识点（每个知识点一个 ### 小节，下面分：是什么 / 为什么重要 / 怎么用或怎么算 / 老师举的例子 / 老师的关键原话（英文原句））\n' +
+    '## 四、公式与方法步骤（逐个符号解释，写出计算或操作步骤；Stata 等软件命令单独列出）\n' +
+    '## 五、重要术语（格式：- **英文术语** 中文：一句话解释）\n' +
+    '## 六、老师强调的重点、可能的考点、作业与通知\n' +
+    '## 七、容易混淆的地方（对比说明）\n' +
+    '## 八、课堂里没听清或存疑的地方（逐字稿中仍不确定的内容，说明你的推断）\n' +
+    '## 九、自测题（5 道，题目用英文，答案用中英文）' + rule;
 }
 let sumBusy = null;
 function renderSummary(s){
@@ -1232,12 +1291,79 @@ function renderSummary(s){
       '<br><br><button class="btn primary" id="btnGen">生成笔记</button></div>';
     $('btnGen').onclick = () => generateSummary(s); return;
   }
-  el.innerHTML = '<div class="sum-tools"><button class="btn" id="btnSumCopy">复制笔记</button><button class="btn" id="btnSumRe">重新生成</button></div>' +
+  el.innerHTML = '<div class="sum-tools"><button class="btn" id="btnSumWord">📄 导出 Word</button><button class="btn" id="btnSumShare">📤 分享</button><button class="btn" id="btnSumCopy">复制笔记</button><button class="btn" id="btnSumRe">校对并重新生成</button></div>' +
     '<div class="md">' + md(s.summary) + '</div>' +
     (s.summaryAt ? '<p class="progress" style="margin-top:24px">生成于 ' + dateLabel(s.summaryAt) + ' ' + hm(s.summaryAt) + ' · 基于 ' + (s.summaryCount || s.segments.length) + ' 句字幕' +
       (s.summaryCount && s.summaryCount < s.segments.length ? '（之后又新增了 ' + (s.segments.length - s.summaryCount) + ' 句，可重新生成）' : '') + '</p>' : '');
-  $('btnSumCopy').onclick = async () => { try{ await navigator.clipboard.writeText(s.summary); toast('已复制'); }catch(e){ toast('复制失败，可用“下载笔记”'); } };
-  $('btnSumRe').onclick = async () => { if (await confirmBox('重新生成笔记？', '会覆盖当前这份笔记。', '重新生成')) generateSummary(s); };
+  $('btnSumCopy').onclick = async () => { try{ await navigator.clipboard.writeText(s.summary); toast('已复制'); }catch(e){ toast('复制失败，可用“导出 Word”'); } };
+  $('btnSumWord').onclick = () => exportWord(s, false);
+  $('btnSumShare').onclick = () => exportWord(s, true);
+  $('btnSumRe').onclick = async () => { if (await confirmBox('校对并重新生成笔记？', '会再检查一遍可疑的句子（重新听录音、重新翻译），然后覆盖当前这份笔记。', '开始')) generateSummary(s); };
+}
+/* ---------- 校对：把可疑的句子重新听一遍、重新翻译，再写笔记 ---------- */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function jsonFrom(t){ const m = (t || '').match(/\{[\s\S]*\}|\[[\s\S]*\]/); if (!m) return null; try{ return JSON.parse(m[0]); }catch(e){ return null; } }
+async function proofread(s, show){
+  const segs = s.segments; if (segs.length < 2) return 0;
+  const isAsr = x => x.au && x.au.length;
+  // 1) 找出可疑的句子：识别把握低的 + AI 读出来不通的
+  const flagged = new Set(segs.filter(x => !x.src0 && x.conf != null && x.conf < -0.55).map(x => x.id));
+  const B = 80;
+  for (let i = 0; i < segs.length; i += B){
+    show('校对中：检查第 ' + (i + 1) + '–' + Math.min(segs.length, i + B) + ' 句（共 ' + segs.length + ' 句）…');
+    const part = segs.slice(i, i + B);
+    const lines = part.map((x, k) => (i + k + 1) + ' | ' + x.src + ' | ' + (x.zh || '')).join('\n');
+    try{
+      const r = await streamChat([{ role:'system', content:'你在检查一份' + langName(s.lang) + '课堂语音识别稿（' + (s.topic || '大学课程') + '）。每行格式：编号 | 识别原文 | 中文译文。找出明显识别错误的行：原文不通顺、出现和上下文无关或不像真词的词、专业术语被听错、句子被截断、中文译文明显不对。只返回 JSON：{"bad":[编号,...]}，没有就返回 {"bad":[]}。宁缺毋滥，最多标出四分之一的行。' },
+        { role:'user', content: lines }], null, { temperature:0.1, max_tokens:400, timeout:60000 });
+      const j = jsonFrom(r); (j && j.bad || []).forEach(n => { const x = segs[n - 1]; if (x && !x.src0) flagged.add(x.id); });
+    }catch(e){}
+  }
+  let list = segs.filter(x => flagged.has(x.id)).slice(0, 40);
+  if (!list.length) return 0;
+  // 2) 重新听：把这些句子对应的录音用更完整的模型再识别一次（Groq 免费版每分钟 20 次，所以排队慢慢来）
+  const reheard = new Map(), chunkText = new Map();
+  if (settings.asrKey && settings.asrEngine === 'groq'){
+    const need = []; list.forEach(x => (x.au || []).forEach(id => { if (!need.includes(id)) need.push(id); }));
+    for (let k = 0; k < need.length && k < 30; k++){
+      show('校对中：重新听可疑的录音 ' + (k + 1) + ' / ' + Math.min(need.length, 30) + '…');
+      const rec = await DB.audGet(s.id + '|' + need[k]); if (!rec) continue;
+      try{
+        const t0 = Date.now();
+        const txt = await groqTranscribe(wavOf([muDecode(rec.mu)]), s, null);
+        chunkText.set(need[k], txt);
+        const wait = 3100 - (Date.now() - t0); if (wait > 0 && k < need.length - 1) await sleep(wait);
+      }catch(e){ if (/429/.test(e.message)) await sleep(8000); }
+    }
+    list.forEach(x => { const t = (x.au || []).map(id => chunkText.get(id) || '').join(' ').trim(); if (t) reheard.set(x.id, t); });
+  }
+  // 3) 结合前后文、重听结果，改正原文并重新翻译
+  const idx = new Map(segs.map((x, i) => [x.id, i]));
+  let fixedN = 0;
+  for (let i = 0; i < list.length; i += 12){
+    show('校对中：改正并重新翻译 ' + Math.min(list.length, i + 12) + ' / ' + list.length + ' 句…');
+    const grp = list.slice(i, i + 12);
+    const items = grp.map(x => {
+      const n = idx.get(x.id);
+      const ctx = segs.slice(Math.max(0, n - 2), n).map(y => y.src).join(' ') + ' ▶[' + (n + 1) + ']◀ ' + segs.slice(n + 1, n + 3).map(y => y.src).join(' ');
+      return '[' + (n + 1) + ']\n上下文：' + ctx + '\n原识别：' + x.src + (reheard.get(x.id) ? '\n重新听到（这段录音完整重识别，可能包含前后句的内容）：' + reheard.get(x.id) : '') + '\n原译文：' + (x.zh || '');
+    }).join('\n\n');
+    try{
+      const r = await streamChat([{ role:'system', content: '你是大学课堂同声传译的课后校对员，课程：' + (s.topic || '大学课程') + '。译文要求：自然、口语化、像中国老师讲课，不要翻译腔；专业术语第一次出现时在中文后括注英文。\n\n现在是课后校对：下面每条给出编号、上下文、原识别结果、（如果有）重新听录音得到的识别结果和原译文。请结合上下文和课程主题，判断老师这一句真正说的是什么，给出改正后的原文（只写这一句，不要带上前后句），并重新翻译成自然的中文。只返回 JSON 数组：[{"n":编号,"en":"改正后的原文","zh":"新译文"}]。' + glossaryText() },
+        { role:'user', content: items }], null, { temperature:0.2, max_tokens:3000, timeout:90000 });
+      const arr = jsonFrom(r);
+      (Array.isArray(arr) ? arr : []).forEach(o => {
+        const x = segs[(o.n | 0) - 1]; if (!x || !o.zh) return;
+        const en = String(o.en || '').trim();
+        if (en && en !== x.src){ x.src0 = x.src; x.src = en; }
+        x.zh = String(o.zh).trim(); x.status = 'done'; x.fixed = true; fixedN++;
+        renderSeg(x, s);
+      });
+      markDirty(s);
+    }catch(e){}
+  }
+  flushSave();
+  return fixedN;
 }
 async function generateSummary(s){
   if (!settings.apiKey.trim()){ toast('先在设置里填好 API Key'); openSettings(); return; }
@@ -1249,6 +1375,11 @@ async function generateSummary(s){
     el.innerHTML = '<p class="progress">⏳ ' + esc(prog) + '</p><div class="md">' + md(text || '') + '</div>';
   };
   try{
+    show('正在等最后一句识别完…');
+    try{ await wChain; }catch(e){}
+    show('校对中：先把听得不确定的句子检查一遍…');
+    const fixedN = await proofread(s, t => show(t));
+    if (fixedN) toast('已校对并更新 ' + fixedN + ' 句字幕', 3000);
     const full = transcript(s);
     let material = full, note = '';
     const LIMIT = 45000;
@@ -1272,7 +1403,7 @@ async function generateSummary(s){
       { role:'system', content: sumPrompt(s) + glossaryText() },
       { role:'user', content: note + material }],
       (d, f) => { shown = f; if (!show._raf){ show._raf = requestAnimationFrame(() => { show._raf = 0; show('正在生成笔记…', shown); }); } },
-      { temperature:0.3, max_tokens:4000, timeout:90000 });
+      { temperature:0.3, max_tokens:8000, timeout:180000 });
     if (!out.trim()) throw new Error('没有返回内容');
     s.summary = out.trim(); s.summaryAt = Date.now(); s.summaryCount = s.segments.length; markDirty(s); flushSave();
     toast('笔记已生成并保存');
@@ -1369,6 +1500,93 @@ $('mMd').onclick = () => {
   t += '# 字幕\n\n' + s.segments.map(x => '- `' + hm(x.t) + '` ' + x.src + '  \n  ' + (x.zh || '')).join('\n');
   download(safeName(s.title) + '.md', t, 'text/markdown');
 };
+/* ---------- Word (.docx) 导出：黑白、层级清楚、可以直接改 ---------- */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++){ let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u){ let c = 0xFFFFFFFF; for (let i = 0; i < u.length; i++) c = CRC_T[(c ^ u[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zipStore(files){   // files: [{name, data(Uint8Array)}]，不压缩的 zip
+  const enc = new TextEncoder(), parts = [], cen = []; let off = 0;
+  files.forEach(f => {
+    const nm = enc.encode(f.name), d = f.data, c = crc32(d);
+    const h = new DataView(new ArrayBuffer(30)); h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);
+    h.setUint32(14, c, true); h.setUint32(18, d.length, true); h.setUint32(22, d.length, true); h.setUint16(26, nm.length, true);
+    parts.push(new Uint8Array(h.buffer), nm, d);
+    const ch = new DataView(new ArrayBuffer(46)); ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint32(16, c, true); ch.setUint32(20, d.length, true); ch.setUint32(24, d.length, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
+    cen.push(new Uint8Array(ch.buffer), nm);
+    off += 30 + nm.length + d.length;
+  });
+  let cl = 0; cen.forEach(x => cl += x.length);
+  const e = new DataView(new ArrayBuffer(22)); e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, cl, true); e.setUint32(16, off, true);
+  return new Blob(parts.concat(cen, [new Uint8Array(e.buffer)]), { type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+const xe = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+function wRuns(text, base){   // **加粗** → 粗体
+  return String(text).split(/(\*\*[^*]+\*\*)/).filter(Boolean).map(part => {
+    const b = /^\*\*[^*]+\*\*$/.test(part), t = b ? part.slice(2, -2) : part.replace(/`/g, '');
+    return '<w:r><w:rPr>' + (b || base === 'b' ? '<w:b/>' : '') + (base === 'muted' ? '<w:color w:val="555555"/><w:sz w:val="20"/>' : '') + '</w:rPr><w:t xml:space="preserve">' + xe(t) + '</w:t></w:r>';
+  }).join('');
+}
+function wP(text, opt = {}){
+  const ppr = (opt.style ? '<w:pStyle w:val="' + opt.style + '"/>' : '') + (opt.ind != null ? '<w:ind w:left="' + opt.ind + '" w:hanging="' + (opt.hang || 0) + '"/>' : '') + '<w:spacing w:before="' + (opt.before || 0) + '" w:after="' + (opt.after != null ? opt.after : 80) + '"/>';
+  return '<w:p><w:pPr>' + ppr + '</w:pPr>' + wRuns(text, opt.base) + '</w:p>';
+}
+function mdToDocx(src){
+  let x = '';
+  (src || '').split('\n').forEach(raw => {
+    const l = raw.replace(/\s+$/, ''); let m;
+    if (!l.trim() || /^\s*(-{3,}|\*{3,})\s*$/.test(l)) return;
+    if ((m = l.match(/^(#{1,4})\s+(.*)/))) x += wP(m[2], { style: 'Heading' + Math.min(3, Math.max(1, m[1].length - 1)), before: 160, after: 80 });
+    else if ((m = l.match(/^(\s*)[-*+•▶]\s+(.*)/))){
+      const lv = Math.min(3, Math.floor(m[1].replace(/\t/g, '  ').length / 2));
+      x += wP((lv ? '•  ' : '▶\uFE0E  ') + m[2], { ind: 360 + lv * 400, hang: 280, after: lv ? 40 : 80, before: lv ? 0 : 60 });
+    }
+    else if ((m = l.match(/^\s*(\d+[.)、])\s+(.*)/))) x += wP(m[1] + ' ' + m[2], { ind: 360, hang: 280 });
+    else if ((m = l.match(/^>\s?(.*)/))) x += wP(m[1], { ind: 360, base: 'muted' });
+    else x += wP(l);
+  });
+  return x;
+}
+function buildDocx(s){
+  const bd = '<w:tblBorders>' + ['top','left','bottom','right','insideH','insideV'].map(k => '<w:' + k + ' w:val="single" w:sz="4" w:color="000000"/>').join('') + '</w:tblBorders>';
+  const cell = (t, w, opt = {}) => '<w:tc><w:tcPr><w:tcW w:w="' + w + '" w:type="dxa"/>' + (opt.shade ? '<w:shd w:val="clear" w:color="auto" w:fill="EEEEEE"/>' : '') + '</w:tcPr>' + wP(t, { after: 0, base: opt.b ? 'b' : opt.base }) + '</w:tc>';
+  const head = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + cell('时间', 900, { shade:1, b:1 }) + cell(langName(s.lang) + '原文', 4300, { shade:1, b:1 }) + cell('中文', 4300, { shade:1, b:1 }) + '</w:tr>';
+  const rows = s.segments.map(x => '<w:tr>' + cell(hm(x.t), 900, { base:'muted' }) + cell(x.src + (x.src0 ? '（已校对）' : ''), 4300) + cell(x.zh || '', 4300) + '</w:tr>').join('');
+  let body = wP(s.title, { style:'Title', after: 60 }) +
+    wP(dateLabel(s.createdAt) + ' ' + hm(s.createdAt) + ' · ' + langName(s.lang) + ' → 中文 · ' + s.segments.length + ' 句', { base:'muted', after: 240 });
+  if (s.summary) body += wP('笔记', { style:'Heading1', before: 120 }) + mdToDocx(s.summary);
+  body += wP('逐句原文与翻译', { style:'Heading1', before: 360 }) +
+    '<w:tbl><w:tblPr><w:tblW w:w="9500" w:type="dxa"/>' + bd + '<w:tblCellMar><w:top w:w="60" w:type="dxa"/><w:left w:w="100" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:right w:w="100" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="900"/><w:gridCol w:w="4300"/><w:gridCol w:w="4300"/></w:tblGrid>' + head + rows + '</w:tbl>';
+  const doc = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' + body +
+    '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1200" w:right="1100" w:bottom="1200" w:left="1100" w:header="600" w:footer="600" w:gutter="0"/></w:sectPr></w:body></w:document>';
+  const font = '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="PingFang SC" w:cs="Calibri"/>';
+  const hs = (id, name, sz, before) => '<w:style w:type="paragraph" w:styleId="' + id + '"><w:name w:val="' + name + '"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="' + before + '" w:after="80"/><w:outlineLvl w:val="' + (id === 'Title' ? 0 : +id.slice(-1) - 1) + '"/></w:pPr><w:rPr><w:b/><w:color w:val="000000"/><w:sz w:val="' + sz + '"/></w:rPr></w:style>';
+  const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr>' + font + '<w:sz w:val="22"/><w:lang w:val="en-GB" w:eastAsia="zh-CN"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="80" w:line="300" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>' +
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
+    hs('Title', 'Title', 36, 0) + hs('Heading1', 'heading 1', 30, 240) + hs('Heading2', 'heading 2', 26, 200) + hs('Heading3', 'heading 3', 23, 160) + '</w:styles>';
+  const enc = new TextEncoder();
+  return zipStore([
+    { name:'[Content_Types].xml', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>') },
+    { name:'_rels/.rels', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>') },
+    { name:'word/_rels/document.xml.rels', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>') },
+    { name:'word/document.xml', data: enc.encode(doc) },
+    { name:'word/styles.xml', data: enc.encode(styles) }
+  ]);
+}
+async function saveBlob(blob, name, share){
+  if (share && navigator.share){
+    try{
+      const file = new File([blob], name, { type: blob.type });
+      if (!navigator.canShare || navigator.canShare({ files:[file] })){ await navigator.share({ files:[file], title: name }); return; }
+    }catch(e){ if (e && e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  if (share) toast('这个浏览器不能直接分享，已下载 Word 文件，可以发给朋友', 4000); else toast('已导出 Word：' + name, 3000);
+}
+function exportWord(s, share){
+  if (!s.segments.length){ toast('这条记录还没有内容'); return; }
+  saveBlob(buildDocx(s), safeName(s.title) + (s.summary ? '_笔记与字幕' : '_字幕') + '.docx', share);
+}
 // 分享：原文 + 译文 + 总结笔记，一起发给朋友或 ChatGPT/Claude
 function shareText(s){
   let t = '【' + s.title + '】' + dateLabel(s.createdAt) + ' ' + hm(s.createdAt) + ' · ' + langName(s.lang) + ' → 中文\n\n';
@@ -1384,18 +1602,21 @@ async function copyOut(text, okMsg){
     toast(ok ? okMsg : '复制失败，请用“下载笔记+字幕”', 3500); return ok;
   }
 }
-$('mShare').onclick = async () => {
-  const s = getS(viewId); closeMask('moreMask'); if (!s || !s.segments.length){ toast('这条记录还没有内容'); return; }
-  const text = shareText(s), name = safeName(s.title) + '.txt';
-  try{
-    if (navigator.share){
-      const file = new File([text], name, { type:'text/plain' });
-      if (navigator.canShare && navigator.canShare({ files:[file] })) await navigator.share({ title: s.title, files:[file] });
-      else await navigator.share({ title: s.title, text });
-      return;
-    }
-  }catch(e){ if (e && e.name === 'AbortError') return; }
-  copyOut(text, '已复制全部内容，可以直接粘贴到微信或发给 AI');
+$('mShare').onclick = () => { const s = getS(viewId); closeMask('moreMask'); if (s) exportWord(s, true); };
+$('mWord').onclick = () => { const s = getS(viewId); closeMask('moreMask'); if (s) exportWord(s, false); };
+$('mAudio').onclick = async () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s) return;
+  const list = await DB.audList(s.id);
+  if (!list.length){ toast('这条记录没有保存录音（这个功能上线之后新录的才有）', 4000); return; }
+  toast('正在生成录音文件…');
+  const parts = list.map(r => muDecode(r.mu)), gap = new Float32Array(4800);   // 段与段之间留 0.3 秒
+  const all = []; parts.forEach((p, i) => { all.push(p); if (i < parts.length - 1) all.push(gap); });
+  let len = 0; all.forEach(c => len += c.length);
+  const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf), w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4, 36 + len * 2, true); w(8,'WAVE'); w(12,'fmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,16000,true); v.setUint32(28,32000,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,'data'); v.setUint32(40, len * 2, true);
+  let o = 44; all.forEach(c => { for (let i = 0; i < c.length; i++, o += 2){ const q = Math.max(-1, Math.min(1, c[i])); v.setInt16(o, q < 0 ? q * 0x8000 : q * 0x7fff, true); } });
+  saveBlob(new Blob([buf], { type:'audio/wav' }), safeName(s.title) + '_录音.wav', false);
 };
 $('mCopyAI').onclick = () => {
   const s = getS(viewId); closeMask('moreMask'); if (!s || !s.segments.length){ toast('这条记录还没有内容'); return; }
@@ -1549,6 +1770,7 @@ $('bmCopy').onclick = async () => { try{ await navigator.clipboard.writeText(boo
 (async function init(){
   document.documentElement.style.setProperty('--zh-size', settings.fontSize + 'px');
   await DB.open();
+  try{ const cut = Date.now() - 30 * 864e5; (await DB.all()).forEach(x => { if ((x.updatedAt || x.createdAt) < cut) DB.audDel(x.id); }); }catch(e){}
   sessions = await DB.all();
   sessions.forEach(s => { s.qa = s.qa || []; s.segments = s.segments || []; s.segments.forEach(x => { if (x.status === 'pending') { x.status = 'err'; x.errMsg = '上次没翻译完'; } }); });
   // 旧版本（单页字幕）数据迁移
