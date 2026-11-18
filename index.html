@@ -101,6 +101,11 @@ input,select,textarea{font:inherit;color:var(--text)}
 .seg .zh.pending{color:var(--faint)}
 .seg .zh.err{color:var(--rec);font-size:14px;cursor:pointer}
 .hide-src .seg .src{display:none}
+.topic-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.topic-chips button{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:5px 11px;font-size:13px;color:var(--text)}
+.topic-chips button.on{border-color:#6366f1;color:#6366f1}
+.word-pop{position:fixed;z-index:9999;max-width:min(320px,86vw);background:#1f2230;color:#fff;border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.5;box-shadow:0 8px 28px rgba(0,0,0,.35);display:none}
+.word-pop b{font-size:15px}
 .live{display:grid;grid-template-columns:46px 1fr;gap:10px;padding:12px 0;color:var(--accent);font-size:calc(var(--zh-size)*.72);line-height:1.55}
 .live .tm{font-size:11.5px;padding-top:3px}
 .subs-empty{text-align:center;color:var(--muted);padding:12vh 10px;line-height:1.9}
@@ -324,6 +329,7 @@ input,select,textarea{font:inherit;color:var(--text)}
     <select id="newLang"></select>
     <label id="topicLabel">课程名称 / 内容</label>
     <input id="newTopic" placeholder="">
+    <div class="topic-chips" id="topicChips"></div>
     <div class="actions">
       <button class="btn" data-close="newMask">取消</button>
       <button class="btn primary" id="btnCreate">开始</button>
@@ -414,6 +420,8 @@ input,select,textarea{font:inherit;color:var(--text)}
     <button id="mRename">✎ 重命名</button>
     <button id="mToggleSrc">👁 隐藏原文</button>
     <button id="mRetry">↻ 重试翻译失败的句子</button>
+    <button id="mShare">📤 分享给朋友 / AI（原文+译文+笔记）</button>
+    <button id="mCopyAI">🤖 复制给 AI（带提问提示）</button>
     <button id="mCopy">⧉ 复制全部字幕</button>
     <button id="mTxt">⇩ 下载字幕 (.txt)</button>
     <button id="mMd">⇩ 下载笔记+字幕 (.md)</button>
@@ -1135,8 +1143,21 @@ function setNewScene(sc){
   fillLangSelect($('newLang'), settings.lastLang[sc] || (sc === 'anime' ? 'ja-JP' : 'en-GB'));
   $('topicLabel').textContent = SCENES[sc].topicLabel; $('newTopic').placeholder = SCENES[sc].topicPh;
 }
-function openNew(sc){ setNewScene(sc || settings.lastScene || 'class'); $('newTopic').value = ''; openMask('newMask'); setTimeout(() => { try{ $('newTopic').focus(); }catch(e){} }, 50); }
-document.querySelectorAll('#scenePick button').forEach(b => b.onclick = () => setNewScene(b.dataset.scene));
+// 课程名快捷选项：常上的课 + 最近用过的名字，点一下就填好
+const TOPIC_PRESETS = { class:['QM','IDMC','PEIB','毕业论文'], anime:[], chat:[] };
+function fillTopicChips(sc){
+  const box = $('topicChips'); if (!box) return;
+  const recent = sessions.filter(x => x.scene === sc && x.topic).sort((a, b) => b.createdAt - a.createdAt).map(x => x.topic.trim());
+  const list = [];
+  (TOPIC_PRESETS[sc] || []).concat(recent).forEach(t => { if (t && !list.some(v => v.toLowerCase() === t.toLowerCase())) list.push(t); });
+  box.innerHTML = list.slice(0, 10).map(t => '<button type="button">' + esc(t) + '</button>').join('');
+  box.querySelectorAll('button').forEach(b => b.onclick = () => {
+    $('newTopic').value = b.textContent;
+    box.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  });
+}
+function openNew(sc){ setNewScene(sc || settings.lastScene || 'class'); $('newTopic').value = ''; fillTopicChips(newScene); openMask('newMask'); setTimeout(() => { try{ $('newTopic').focus(); }catch(e){} }, 50); }
+document.querySelectorAll('#scenePick button').forEach(b => b.onclick = () => { setNewScene(b.dataset.scene); fillTopicChips(b.dataset.scene); });
 document.querySelectorAll('.scard').forEach(b => b.onclick = () => openNew(b.dataset.scene));
 $('btnNew').onclick = () => { closeSide(); openNew(); };
 $('newTopic').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) $('btnCreate').click(); });
@@ -1175,7 +1196,8 @@ function transcript(s, maxChars){
   const t0 = s.segments.length ? s.segments[0].t : 0;
   const lines = s.segments.map(x => {
     const sec = Math.round((x.t - t0) / 1000);
-    return '[' + pad(Math.floor(sec / 60)) + ':' + pad(sec % 60) + '] ' + x.src;
+    // 原文和实时译文一起给：原文偶尔听错，但译文往往已经按上下文纠正过，两者互相印证
+    return '[' + pad(Math.floor(sec / 60)) + ':' + pad(sec % 60) + '] ' + x.src + (x.zh && x.status !== 'err' ? '\n    中：' + x.zh : '');
   });
   let text = lines.join('\n');
   if (maxChars && text.length > maxChars) text = '（前面省略）\n' + text.slice(-maxChars);
@@ -1183,7 +1205,7 @@ function transcript(s, maxChars){
 }
 function sumPrompt(s){
   const L = langName(s.lang), topic = s.topic ? '（' + s.topic + '）' : '';
-  const rule = '\n\n规则：用简体中文，Markdown 格式（用 ## 标题和 - 列表，不要用表格）；只根据逐字稿，不要编造；逐字稿来自语音识别，遇到明显识别错误请按上下文纠正。';
+  const rule = '\n\n规则：用简体中文，Markdown 格式（用 ## 标题和 - 列表，不要用表格）；只根据逐字稿，不要编造。逐字稿每句先是语音识别的原文，“中：”后面是实时中文译文；原文常有听错的词，请把原文和译文对照着读：原文明显不通而译文通顺时，以译文的意思为准，并按上下文把术语还原成正确的英文。';
   if (s.scene === 'anime') return '下面是一段动漫/影视' + topic + '的' + L + '台词语音识别稿。请整理成观看笔记，包含这些部分：\n' +
     '## 剧情梗概\n## 出场角色（名字用通行中文译名）\n## 精彩台词（原文 + 中文，5-8 句）\n## 语言学习：值得学的' + L + '词句（原文、读音/假名、意思、用法）' + rule;
   if (s.scene === 'chat') return '下面是一段' + L + '对话' + topic + '的语音识别稿。请整理成中文纪要，包含这些部分：\n' +
@@ -1347,6 +1369,40 @@ $('mMd').onclick = () => {
   t += '# 字幕\n\n' + s.segments.map(x => '- `' + hm(x.t) + '` ' + x.src + '  \n  ' + (x.zh || '')).join('\n');
   download(safeName(s.title) + '.md', t, 'text/markdown');
 };
+// 分享：原文 + 译文 + 总结笔记，一起发给朋友或 ChatGPT/Claude
+function shareText(s){
+  let t = '【' + s.title + '】' + dateLabel(s.createdAt) + ' ' + hm(s.createdAt) + ' · ' + langName(s.lang) + ' → 中文\n\n';
+  if (s.summary) t += '===== 总结笔记 =====\n' + s.summary.trim() + '\n\n';
+  t += '===== 字幕（原文 / 中文）=====\n' + s.segments.map(x => '[' + hm(x.t) + '] ' + x.src + '\n' + (x.zh || '')).join('\n\n');
+  return t;
+}
+async function copyOut(text, okMsg){
+  try{ await navigator.clipboard.writeText(text); toast(okMsg, 3500); return true; }
+  catch(e){
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px'; document.body.appendChild(ta); ta.select();
+    let ok = false; try{ ok = document.execCommand('copy'); }catch(_){} ta.remove();
+    toast(ok ? okMsg : '复制失败，请用“下载笔记+字幕”', 3500); return ok;
+  }
+}
+$('mShare').onclick = async () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s || !s.segments.length){ toast('这条记录还没有内容'); return; }
+  const text = shareText(s), name = safeName(s.title) + '.txt';
+  try{
+    if (navigator.share){
+      const file = new File([text], name, { type:'text/plain' });
+      if (navigator.canShare && navigator.canShare({ files:[file] })) await navigator.share({ title: s.title, files:[file] });
+      else await navigator.share({ title: s.title, text });
+      return;
+    }
+  }catch(e){ if (e && e.name === 'AbortError') return; }
+  copyOut(text, '已复制全部内容，可以直接粘贴到微信或发给 AI');
+};
+$('mCopyAI').onclick = () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s || !s.segments.length){ toast('这条记录还没有内容'); return; }
+  const head = '下面是我' + (s.scene === 'class' ? '一节英文课' : s.scene === 'anime' ? '看的一段视频' : '一段对话') + '（' + s.title + '）的语音转写原文、中文翻译' + (s.summary ? '和课堂笔记' : '') +
+    '。原文是自动语音识别的，可能有听错的词，可以对照中文理解。请先帮我用中文梳理这节内容的重点，然后我会继续提问。\n\n';
+  copyOut(head + shareText(s), '已复制，打开 ChatGPT / Claude 直接粘贴就行');
+};
 $('mDelete').onclick = async () => {
   const s = getS(viewId); closeMask('moreMask'); if (!s) return;
   if (!await confirmBox('删除这条记录？', '“' + s.title + '”的字幕、笔记和问答都会被删除，无法恢复。', '删除')) return;
@@ -1354,6 +1410,38 @@ $('mDelete').onclick = async () => {
   sessions = sessions.filter(x => x.id !== s.id); await DB.del(s.id);
   viewId = null; ls.del('lt_lastView'); renderSide(); renderMain(); toast('已删除');
 };
+
+/* ================= 选中英文单词看中文意思 ================= */
+const wordPop = document.createElement('div'); wordPop.className = 'word-pop'; wordPop.setAttribute('translate', 'no'); document.body.appendChild(wordPop);
+const wordCache = new Map(); let wordTimer = null, wordKey = '';
+function hideWord(){ wordPop.style.display = 'none'; wordKey = ''; }
+function lookupSelection(){
+  const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+  const word = sel.toString().replace(/\s+/g, ' ').trim();
+  if (!word || word.length > 60 || word.split(' ').length > 6 || /[\u4e00-\u9fff]/.test(word)) return;
+  const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+  const srcEl = node && node.closest && node.closest('.src, #liveText, .md');
+  if (!srcEl) return;
+  const seg = srcEl.closest('.seg');
+  const sentence = (seg ? seg.querySelector('.src').textContent : srcEl.textContent).trim().slice(0, 400);
+  const key = word.toLowerCase() + '|' + sentence;
+  if (key === wordKey) return; wordKey = key;
+  const r = sel.getRangeAt(0).getBoundingClientRect();
+  wordPop.style.display = 'block';
+  wordPop.style.left = Math.max(8, Math.min(innerWidth - 330, r.left)) + 'px';
+  const below = r.bottom + 10, h = 100;
+  wordPop.style.top = (below + h < innerHeight ? below : Math.max(8, r.top - h - 10)) + 'px';
+  const show = t => { wordPop.innerHTML = '<b>' + esc(word) + '</b><div>' + esc(t).replace(/\n/g, '<br>') + '</div>'; };
+  if (wordCache.has(key)){ show(wordCache.get(key)); return; }
+  if (!settings.apiKey.trim()){ show('先在设置里填 API Key'); return; }
+  show('查询中…');
+  streamChat([{ role:'system', content:'你是英汉词典。用户给出一个英文单词或短语和它所在的句子（语音识别得到，可能有错字）。用简体中文回答，严格两行：\n第一行：在这句话里的中文意思（词性），不超过 20 字\n第二行：常见搭配或一句补充说明，不超过 25 字。不要其他内容。' },
+              { role:'user', content:'单词/短语：' + word + '\n句子：' + sentence }], null, { max_tokens: 80, temperature: 0.2, timeout: 15000 })
+    .then(t => { t = (t || '').trim() || '没查到'; wordCache.set(key, t); if (wordKey === key) show(t); })
+    .catch(e => { if (wordKey === key) show('查询失败：' + friendlyErr(e)); });
+}
+document.addEventListener('selectionchange', () => { clearTimeout(wordTimer); wordTimer = setTimeout(lookupSelection, 450); });
+document.addEventListener('pointerdown', e => { if (!wordPop.contains(e.target)) hideWord(); }, true);
 
 /* ================= 设置 ================= */
 const SF = ['baseUrl','model','apiKey','glossary','asrEngine','asrKey'];
