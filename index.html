@@ -358,6 +358,8 @@ input,select,textarea{font:inherit;color:var(--text)}
     </select>
     <label>Groq Key（选 Groq 时填；console.groq.com 免费注册）</label>
     <input id="asrKey" type="password" placeholder="gsk_..." autocomplete="off" spellcheck="false">
+    <label>麦克风</label>
+    <select id="micId"><option value="">自动（优先用电脑/平板自带麦克风，不用手机）</option></select>
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="btnTest">测试翻译</button><button class="btn" id="btnTestAsr">测试 Groq Key</button></div>
     <div class="test-out" id="testOut"></div>
     <div class="actions">
@@ -700,9 +702,15 @@ let stick = true;
   const p = $(id); const near = p.scrollHeight - p.scrollTop - p.clientHeight < 140;
   stick = near; $('jump').classList.toggle('show', !near && id === 'pSubs' && (getS(viewId) || {segments:[]}).segments.length > 0);
 }));
+// 用户刚动过滚动（手指、触控板、滚轮）的 5 秒内不自动滚到底，免得往上翻时被拽回去、看着卡顿
+let userScrollAt = 0;
+['pSubs','pQA'].forEach(id => ['wheel','touchstart','touchmove','pointerdown','keydown'].forEach(ev => $(id).addEventListener(ev, () => { userScrollAt = Date.now(); }, { passive:true })));
+let scrollRaf = 0;
 function scrollEnd(force){
   const p = tab === 'qa' ? $('pQA') : $('pSubs');
-  if (force || stick) p.scrollTop = p.scrollHeight;
+  if (force){ p.scrollTop = p.scrollHeight; return; }
+  if (!stick || Date.now() - userScrollAt < 5000 || scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; if (stick && Date.now() - userScrollAt >= 5000) p.scrollTop = p.scrollHeight; });
 }
 $('jump').onclick = () => { stick = true; scrollEnd(true); $('jump').classList.remove('show'); };
 
@@ -854,7 +862,7 @@ function addFinal(text, sid){
   if (viewId === s.id) renderHeader();
   renderSide();
 }
-function setInterim(t){ interim = t; setLive(t); scrollEnd(); }
+function setInterim(t){ if (t === interim) return; interim = t; setLive(t); scrollEnd(); }
 // 老师停顿约 1.4 秒（看番 1 秒），或一句太长时，主动断句，让翻译更及时（iPhone/iPad 上尤其需要）
 function armFlush(){
   clearTimeout(flushTimer);
@@ -905,10 +913,33 @@ const VADP = {
   chat: { minLen:2500, pause:400, soft:6000, pause2:250, maxLen:9000 },
   anime:{ minLen:1500, pause:350, soft:3500, pause2:220, maxLen:6000 }
 };
+// 选麦克风：Mac 会把附近的 iPhone 当成默认麦克风（连续互通），这里自动避开手机，优先用电脑/平板自带的
+const PHONE_MIC = /iphone|ipad|continuity|连续互通|手机/i;
+async function openMic(){
+  const base = { echoCancellation:false, noiseSuppression:true, autoGainControl:true, channelCount:1 };
+  const md = navigator.mediaDevices;
+  if (settings.micId){
+    try{ return await md.getUserMedia({ audio: Object.assign({ deviceId:{ exact: settings.micId } }, base) }); }catch(e){}
+  }
+  let st = await md.getUserMedia({ audio: base });
+  try{
+    const tr = st.getAudioTracks()[0], label = (tr && tr.label) || '';
+    if (PHONE_MIC.test(label)){
+      const devs = (await md.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications' && !PHONE_MIC.test(d.label) && !/virtual|teams|zoom|blackhole|soundflower|loopback/i.test(d.label));
+      const pick = devs.find(d => /macbook|built-?in|内建|内置|ipad/i.test(d.label) && !/iphone/i.test(d.label)) || devs[0];
+      if (pick){
+        st.getTracks().forEach(t => t.stop());
+        st = await md.getUserMedia({ audio: Object.assign({ deviceId:{ exact: pick.deviceId } }, base) });
+        toast('已改用「' + pick.label + '」，不用手机麦克风', 3000);
+      }
+    }
+  }catch(e){}
+  return st;
+}
 function startWhisper(sid){
   wSid = sid; wCarry = ''; wCtx = '';
   try{ wAc = new (window.AudioContext || window.webkitAudioContext)(); wAc.resume && wAc.resume(); }catch(e){}
-  navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:true, autoGainControl:true } }).then(stream => {
+  openMic().then(stream => {
     if (!wantRun || recId !== sid){ stream.getTracks().forEach(t => t.stop()); return; }
     wMic = stream;
     const s = getS(sid); const P = VADP[(s && s.scene) || 'class'] || VADP.class;
@@ -1010,7 +1041,7 @@ function flushWhisper(frames, force){
   wChain = wChain.then(() => groqTranscribe(wav, s)).then(text => {
     wPending--;
     text = (text || '').trim();
-    if (text && !HALLU.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force);
+    if (text && !HALLU.test(text) && !/^(you|thank you|thanks|bye|okay|ok|so|um|uh)[.!?]?$/i.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force);
     else if (force && wCarry){ wTake('', sid, true); }
     if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim(wCarry ? wCarry + ' …' : (wPending ? '⏳ 识别中…' : '🎙 正在听…'));
   }, e => {
@@ -1018,25 +1049,46 @@ function flushWhisper(frames, force){
     toast('识别失败：' + (/401/.test(e.message) ? 'Groq Key 不对' : /429/.test(e.message) ? '请求太频繁，几秒后自动恢复' : /Failed to fetch|Load failed/i.test(e.message) ? '连不上 Groq（检查网络）' : e.message), 3500);
   });
 }
+// 给 Whisper 的提示：课程名写得简单（qm、毕业论文）也能展开成英文关键词；提示里绝不放中文（否则英文课会被识别成中文）
+const COURSE_HINTS = [
+  [/\bqm\b|quant|定量|计量|统计/i, 'Quantitative Methods: statistics, regression, econometrics, Stata, hypothesis testing'],
+  [/idmc|inequality|不平等/i, 'Inequality Dynamics in Modern Capitalism: inequality, capitalism, wealth, income distribution'],
+  [/peib|political economy|国际商务|政治经济/i, 'Political Economy of International Business: multinationals, trade, FDI, globalisation'],
+  [/毕业论文|论文|dissertation|thesis/i, 'Dissertation supervision: research question, literature review, methodology, data, findings'],
+  [/stata/i, 'Stata commands, regression output, variables, do-file']
+];
+function asrHint(s, terms){
+  const cjkLang = isCJK(s.lang), topic = (s.topic || '').trim();
+  const parts = [];
+  COURSE_HINTS.forEach(([re, h]) => { if (re.test(topic)) parts.push(h); });
+  const latin = cjkLang ? topic : topic.replace(/[^\x00-\x7F\u00C0-\u024F]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (latin && !parts.some(p => p.toLowerCase().includes(latin.toLowerCase()))) parts.unshift(latin);
+  if (terms) parts.push(cjkLang ? terms : terms.replace(/[^\x00-\x7F\u00C0-\u024F]+/g, ' '));
+  if (!parts.length && !cjkLang) parts.push('A university lecture.');
+  return parts.join('. ').replace(/\s+/g, ' ').trim().slice(0, 300);
+}
 async function groqTranscribe(wav, s){
   const fd = new FormData();
   fd.append('file', new Blob([wav], { type:'audio/wav' }), 'audio.wav');
-  fd.append('model', 'whisper-large-v3-turbo');
+  fd.append('model', 'whisper-large-v3');   // 完整版比 turbo 更抗噪
   fd.append('language', (s.lang || 'en').slice(0, 2));
   fd.append('temperature', '0');
   fd.append('response_format', 'verbose_json');
   // 把课程名和术语表交给 Whisper，帮助它认对专业词
   const terms = (settings.glossary || '').split('\n').map(l => l.split('=')[0].trim()).filter(Boolean).join(', ');
   // 只给课程名和术语（实测把上一句原文也塞进去，Whisper 会重复上一句或被带偏，所以不放）
-  const hint = [s.topic, terms].filter(Boolean).join('. ').slice(0, 300);
+  const hint = asrHint(s, terms);
   if (hint) fd.append('prompt', hint);
   const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + settings.asrKey.trim() }, body: fd });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const j = await r.json();
   if (!Array.isArray(j.segments)) return j.text || '';
   // 去掉 Whisper 认为“没人说话”或明显瞎编的小段
-  return j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2)
+  let out = j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2)
     .map(g => g.text).join(' ').replace(/\s+/g, ' ').trim();
+  // 英文课却识别出了中文（多半是旁边有人说中文或噪音），把中文部分去掉
+  if (!isCJK(s.lang) && /[\u4e00-\u9fff\u3040-\u30ff]/.test(out)) out = out.replace(/[\u3000-\u303f\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef]+/g, ' ').replace(/\s+/g, ' ').replace(/\s+([.,!?;:])/g, '$1').replace(/^[.,!?;:\s]+/, '').trim();
+  return out;
 }
 
 async function keepAwake(){ try{ if ('wakeLock' in navigator && wantRun) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){} }
@@ -1305,14 +1357,24 @@ $('mDelete').onclick = async () => {
 
 /* ================= 设置 ================= */
 const SF = ['baseUrl','model','apiKey','glossary','asrEngine','asrKey'];
+async function fillMics(){
+  const sel = $('micId'); if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try{
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    sel.innerHTML = '<option value="">自动（优先用电脑/平板自带麦克风，不用手机）</option>' + devs.map((d, i) => '<option value="' + d.deviceId + '">' + esc(d.label || ('麦克风 ' + (i + 1))) + '</option>').join('');
+    sel.value = settings.micId || '';
+  }catch(e){}
+}
 function openSettings(){
   closeSide(); $('preset').value = settings.preset; SF.forEach(f => $(f).value = settings[f] || '');
+  fillMics();
   $('testOut').textContent = ''; openMask('settingsMask');
 }
 $('btnSettings').onclick = openSettings;
 $('preset').onchange = () => { const p = PRESETS[$('preset').value]; if (p.baseUrl) $('baseUrl').value = p.baseUrl; if (p.model) $('model').value = p.model; };
 $('btnSave').onclick = () => {
   settings.preset = $('preset').value; SF.forEach(f => settings[f] = $(f).value.trim());
+  settings.micId = $('micId') ? $('micId').value : '';
   saveSettings(); closeMask('settingsMask'); toast('已保存'); renderMain();
 };
 $('btnTest').onclick = async () => {
