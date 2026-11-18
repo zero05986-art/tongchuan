@@ -542,8 +542,15 @@ const DB = {
           if (!d.objectStoreNames.contains('sessions')) d.createObjectStore('sessions', { keyPath:'id' });
           if (!d.objectStoreNames.contains('audio')) d.createObjectStore('audio', { keyPath:'k' });   // 每段录音：k = 记录id|段id
         };
-        r.onsuccess = () => { this.db = r.result; res(); };
-        r.onerror = () => res(); r.onblocked = () => res();
+        r.onsuccess = () => {
+          this.db = r.result;
+          // 以后再升级时，让旧页面自动让路（不然新版本会卡住、看起来记录全没了）
+          this.db.onversionchange = () => { try{ this.db.close(); }catch(e){} toast('实时同传更新了，请刷新这个页面', 6000); };
+          res();
+        };
+        r.onerror = () => res();
+        // 有别的旧页面开着时，升级会被挡住：提示关掉旧页面，继续等，不要用空的备用存储
+        r.onblocked = () => { try{ toast('请关掉或刷新其它打开着的“实时同传”页面，记录马上就会出现', 8000); }catch(e){} };
       }catch(e){ res(); }
     });
   },
