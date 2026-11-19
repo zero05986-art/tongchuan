@@ -1,0 +1,22 @@
+{
+  "id": "/tongchuan/",
+  "name": "实时同传 · 听课、看番、复习",
+  "short_name": "实时同传",
+  "description": "外语实时转中文字幕：上课、看番、对话，自动记录并生成复习笔记",
+  "lang": "zh-CN",
+  "start_url": "/tongchuan/?source=app",
+  "scope": "/tongchuan/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f6f8",
+  "theme_color": "#6366f1",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "新建上课记录", "short_name": "上课", "url": "/tongchuan/?new=class", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "新建看番记录", "short_name": "看番", "url": "/tongchuan/?new=anime", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ]
+}
