@@ -488,6 +488,8 @@ svg.ic{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-wid
     <button id="mRename"><i data-ic="pencil"></i>重命名</button>
     <button id="mToggleSrc"><i data-ic="eye"></i><span>隐藏原文</span></button>
     <button id="mRetry"><i data-ic="retry"></i>重试翻译失败的句子</button>
+    <button id="mRebuild"><i data-ic="headphones"></i>用录音重新识别整节课</button>
+    <button id="mTrim"><i data-ic="scissors"></i>删掉多录的部分…</button>
     <hr>
     <button id="mWord"><i data-ic="doc"></i>导出 Word（笔记 + 原文 + 译文）</button>
     <button id="mShare"><i data-ic="share"></i>分享给朋友</button>
@@ -576,6 +578,7 @@ const IC = {
   install:'<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M12 7.5v6M9.5 11l2.5 2.5 2.5-2.5"/>',
   list:'<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
   chev:'<path d="m7 10 5 5 5-5"/>',
+  scissors:'<circle cx="6" cy="6.5" r="2.5"/><circle cx="6" cy="17.5" r="2.5"/><path d="M8.2 7.8 20 17M8.2 16.2 20 7"/>',
   more:'<circle cx="5.5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor"/>',
   mic:'<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
   pencil:'<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
@@ -1104,7 +1107,7 @@ let wMic = null, wAc = null, wProc = null, wSrc = null, wSeg = null, wSid = null
    不再用“音量够不够大”判断有没有人说话（坐后排、老师声音小时会一直判成没人说话）：
    一直录、按停顿切，交给 Whisper 判断，没人说话的段落由它的 no_speech 概率过滤掉 */
 const VADP = {
-  class:{ minLen:4000, pause:450, soft:8000, pause2:250, maxLen:12000 },
+  class:{ minLen:4000, pause:500, soft:11000, pause2:280, maxLen:18000 },
   chat: { minLen:2500, pause:400, soft:6000, pause2:250, maxLen:9000 },
   anime:{ minLen:1500, pause:350, soft:3500, pause2:220, maxLen:6000 }
 };
@@ -1273,7 +1276,17 @@ function flushWhisper(frames, force){
   const ck = { id: uid(), conf: null };
   DB.audPut({ k: sid + '|' + ck.id, sid, id: ck.id, t: Date.now(), mu: muEncode(pcm) });
   if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim((wCarry ? wCarry + ' ' : '') + '⏳');
-  wChain = wChain.then(() => groqTranscribe(wav, s, ck)).then(text => {
+  const tryAsr = async () => {
+    for (let a = 0; ; a++){
+      try{ return await groqTranscribe(wav, s, ck); }
+      catch(e){
+        if (a >= 4 || /401/.test(e.message)) throw e;
+        if (recId === sid) setInterim((wCarry ? wCarry + ' ' : '') + '⏳ 网络慢，重试中…');
+        await new Promise(r => setTimeout(r, /429/.test(e.message) ? 6000 * (a + 1) : 1500 * (a + 1)));
+      }
+    }
+  };
+  wChain = wChain.then(tryAsr).then(text => {
     wPending--;
     text = (text || '').trim();
     if (text && !HALLU.test(text) && !/^(you|thank you|thanks|bye|okay|ok|so|um|uh)[.!?]?$/i.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force, ck);
@@ -1327,6 +1340,8 @@ async function groqTranscribe(wav, s, ck, extraPrompt){
     const t = norm(g.text), w = t.split(' ').filter(Boolean);
     if (!w.length) return true;
     if (w.length > 7) return false;
+    // 长句被切开时，后半截可能很短、把握也不高——这时候不能丢（正在接半句、或者这段录音里还有别的话）
+    if (wCarry || j.segments.length > 1) return recent.some(r => r === t);
     if (g.avg_logprob < -0.95) return true;          // 很短又很没把握：多半是噪音里“听”出来的
     if (w.length <= 5 && g.avg_logprob < -0.8) return true;   // 例如安静时冒出来的 “and innovation.”
     if (g.avg_logprob > -0.7) return false;
@@ -1867,6 +1882,144 @@ $('mDelete').onclick = async () => {
   if (recId === s.id) stopRec();
   sessions = sessions.filter(x => x.id !== s.id); await DB.del(s.id);
   viewId = null; ls.del('lt_lastView'); renderSide(); renderMain(); toast('已删除');
+};
+
+/* ================= 删掉多录的部分 ================= */
+$('mTrim').onclick = async () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s || !s.segments.length) return;
+  if (recId === s.id){ toast('先停止记录'); return; }
+  const last = s.segments[s.segments.length - 1];
+  const v = prompt('只保留到几点？（24 小时制，例如 18:00）\n之后的字幕和录音都会删掉。最后一句在 ' + hm(last.t) + '。', '');
+  if (!v) return;
+  const m = v.trim().replace('：', ':').match(/^(\d{1,2})[:.](\d{2})$/);
+  if (!m){ toast('时间格式不对，写成 18:00 这样'); return; }
+  const d = new Date(s.createdAt); d.setHours(+m[1], +m[2], 0, 0);
+  let cut = d.getTime(); if (cut < s.createdAt) cut += 864e5;     // 跨过午夜
+  const keep = s.segments.filter(x => x.t < cut), n = s.segments.length - keep.length;
+  if (!n){ toast(m[0] + ' 之后没有内容'); return; }
+  if (!await confirmBox('删掉 ' + m[0] + ' 以后的内容？', '会删掉 ' + n + ' 句字幕和这段时间的录音，无法恢复。', '删掉')) return;
+  s.segments = keep;
+  const aud = await DB.audList(s.id);
+  await new Promise(res => { try{ const tx = DB.db.transaction('audio', 'readwrite'); aud.filter(a => a.t > cut + 30000).forEach(a => tx.objectStore('audio').delete(a.k)); tx.oncomplete = res; tx.onerror = res; }catch(e){ res(); } });
+  markDirty(s); renderSide(); renderMain(); toast('已删掉 ' + n + ' 句');
+};
+
+/* ================= 用录音重新识别整节课 =================
+   边听边识别时为了快，录音被切成 5–18 秒的小段，长句容易被切碎、漏词。
+   课后把整节课的录音拼成约 28 秒的大段重新识别，再按完整句子重新断句、翻译。 */
+const muDec = buf => { const u = new Uint8Array(buf), f = new Float32Array(u.length); for (let i = 0; i < u.length; i++){ const v = (Math.pow(256, (u[i] & 0x7f) / 127) - 1) / 255; f[i] = u[i] & 0x80 ? -v : v; } return f; };
+function splitSentences(wins){
+  const out = []; let cur = null, lastEnd = 0;
+  const words = t => t.split(/\s+/).filter(Boolean).length;
+  const close = () => { if (cur && cur.text.trim()) out.push({ text: cur.text.trim(), t: cur.t, au: [...cur.au], conf: cur.conf }); cur = null; };
+  for (const w of wins){
+    if (cur && w.start - lastEnd > 8000) close();
+    for (const g of (w.segs || [])){
+      if (HALLU.test(g.text)) continue;
+      // 一小段里可能有好几句：按句号拆开
+      const pieces = g.text.split(/(?<=[.!?])\s+(?=["'“(]?[A-Z0-9])/);
+      for (const p of pieces){
+        if (!p.trim()) continue;
+        if (!cur) cur = { text: '', t: g.t, au: new Set(), conf: 0 };
+        cur.text += (cur.text ? ' ' : '') + p.trim(); w.ids.forEach(id => cur.au.add(id)); cur.conf = Math.min(cur.conf, g.conf);
+        const n = words(cur.text);
+        if ((SENT_END.test(cur.text) && n >= 4) || n >= 45) close();
+      }
+    }
+    lastEnd = w.end;
+  }
+  close();
+  return out;
+}
+async function rebuildFromAudio(s, show){
+  const aud = await DB.audList(s.id);
+  if (!aud.length) throw new Error('这条记录没有保存录音');
+  const wins = []; let cur = null;
+  for (const c of aud){
+    const dur = c.mu.byteLength / 16000, start = c.t - dur * 1000;
+    if (!cur || cur.dur + dur > 28 || start - cur.end > 8000){ cur = { ids: [], keys: [], dur: 0, start, end: c.t, offs: [] }; wins.push(cur); }
+    cur.offs.push([cur.dur, start]); cur.ids.push(c.id); cur.keys.push(c.k); cur.dur += dur; cur.end = c.t;
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const hint = asrHint(s, (settings.glossary || '').split('\n').map(l => l.split('=')[0].trim()).filter(Boolean).join(', '));
+  for (let i = 0; i < wins.length; i++){
+    const w = wins[i];
+    show('重新听录音：' + (i + 1) + ' / ' + wins.length + '（大约还要 ' + Math.ceil((wins.length - i) * 4.5 / 60) + ' 分钟）');
+    const parts = []; for (const k of w.keys){ const r = await DB.audGet(k); if (r) parts.push(muDec(r.mu)); }
+    const wav = wavOf(parts); let j = null;
+    for (let a = 0; a < 8 && !j; a++){
+      const fd = new FormData();
+      fd.append('file', new Blob([wav], { type:'audio/wav' }), 'a.wav'); fd.append('model', 'whisper-large-v3');
+      fd.append('language', (s.lang || 'en').slice(0, 2)); fd.append('temperature', '0'); fd.append('response_format', 'verbose_json');
+      if (hint) fd.append('prompt', hint);
+      try{
+        const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization:'Bearer ' + settings.asrKey.trim() }, body: fd });
+        if (r.status === 401) throw new Error('Groq Key 不对');
+        if (r.status === 429){ const ra = parseFloat(r.headers.get('retry-after') || '20'); show('Groq 免费额度用得太快，等 ' + Math.round(ra) + ' 秒再继续…'); await sleep(Math.min(120, ra + 1) * 1000); continue; }
+        if (!r.ok){ await sleep(3000); continue; }
+        j = await r.json();
+      }catch(e){ if (/Key/.test(e.message)) throw e; await sleep(3000); }
+    }
+    const absT = sec => { let t = w.start + sec * 1000; for (const [off, s0] of w.offs){ if (sec >= off) t = s0 + (sec - off) * 1000; } return t; };
+    w.segs = (j && j.segments || []).filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2)
+      .map(g => ({ text: g.text.trim(), t: absT(g.start), conf: g.avg_logprob }));
+    await sleep(3100);
+  }
+  const sents = splitSentences(wins).filter(x => !(x.conf < -0.95 && x.text.split(/\s+/).length <= 5));
+  // 翻译：每次 12 句一起翻，带上前文
+  const zh = new Array(sents.length).fill('');
+  const B = 12; let doneB = 0;
+  const jobs = []; for (let i = 0; i < sents.length; i += B) jobs.push(i);
+  const runOne = async i => {
+    const part = sents.slice(i, i + B), ctx = sents.slice(Math.max(0, i - 3), i).map(x => x.text).join(' ');
+    const u = (ctx ? '【前文，仅供理解】\n' + ctx + '\n\n' : '') + '【逐句翻译下面每一行，返回 JSON 数组 [{"n":编号,"zh":"译文"}]，条数必须一样】\n' + part.map((x, k) => (k + 1) + '. ' + x.text).join('\n');
+    for (let a = 0; a < 3; a++){
+      try{
+        const r = await streamChat([{ role:'system', content: transPrompt(s).replace('只输出这一句的译文，不要解释、不要加引号、不要重复前文、不要附原文。', '只输出 JSON。') }, { role:'user', content: u }], null, { temperature:0.2, max_tokens:3000, timeout:90000 });
+        const arr = jsonFrom(r); if (!Array.isArray(arr)) continue;
+        arr.forEach(o => { const k = +o.n - 1; if (k >= 0 && k < part.length && o.zh) zh[i + k] = String(o.zh).trim(); });
+        break;
+      }catch(e){}
+    }
+    doneB++; show('翻译：' + Math.min(sents.length, doneB * B) + ' / ' + sents.length + ' 句…');
+  };
+  for (let k = 0; k < jobs.length; k += 4) await Promise.all(jobs.slice(k, k + 4).map(runOne));
+  // 整批没解析出来的，换成 6 句一组再翻一次
+  const miss = zh.map((z, i) => z ? -1 : i).filter(i => i >= 0);
+  for (let k = 0; k < miss.length; k += 6){
+    const g = miss.slice(k, k + 6);
+    show('补翻漏掉的句子：' + Math.min(miss.length, k + 6) + ' / ' + miss.length + '…');
+    for (let a = 0; a < 2; a++){
+      try{
+        const r = await streamChat([{ role:'system', content: transPrompt(s).replace('只输出这一句的译文，不要解释、不要加引号、不要重复前文、不要附原文。', '只输出 JSON。') },
+          { role:'user', content: '逐句翻译，返回 JSON 数组 [{"n":编号,"zh":"译文"}]：\n' + g.map((i, q) => (q + 1) + '. ' + sents[i].text).join('\n') }], null, { temperature:0.2, max_tokens:2000, timeout:60000 });
+        const arr = jsonFrom(r); if (!Array.isArray(arr)) continue;
+        arr.forEach(o => { const i = g[+o.n - 1]; if (i !== undefined && o.zh) zh[i] = String(o.zh).trim(); });
+        break;
+      }catch(e){}
+    }
+  }
+  return sents.map((x, i) => ({ id: uid(), src: x.text, zh: zh[i], status: zh[i] ? 'done' : 'err', errMsg: zh[i] ? '' : '翻译失败，可在菜单里重试', t: x.t, au: x.au, conf: x.conf, rebuilt: true }));
+}
+$('mRebuild').onclick = async () => {
+  const s = getS(viewId); closeMask('moreMask'); if (!s) return;
+  if (recId === s.id){ toast('先停止记录'); return; }
+  if (!settings.asrKey || settings.asrEngine !== 'groq'){ toast('需要在设置里填好 Groq Key'); return; }
+  const aud = await DB.audList(s.id);
+  if (!aud.length){ toast('这条记录没有保存录音（录音只保留 30 天）'); return; }
+  const mins = Math.round(aud.reduce((t, a) => t + a.mu.byteLength, 0) / 16000 / 60);
+  if (!await confirmBox('用录音重新识别整节课？', '会把约 ' + mins + ' 分钟的录音重新听一遍，按完整的句子重新断句和翻译，替换现在的字幕（大约需要 ' + Math.max(1, Math.round(mins / 6)) + ' 分钟，期间别关页面）。原来的笔记会保留，之后可以重新生成。', '开始')) return;
+  if (s.rebuilding){ toast('已经在处理了'); return; }
+  s.rebuilding = true;
+  const show = t => toast(t, 600000);
+  try{
+    const segs = await rebuildFromAudio(s, show);
+    if (segs.length < Math.min(5, s.segments.length / 3)) throw new Error('重新识别出来的内容太少，已保留原字幕');
+    s.segOld = s.segments.map(x => ({ src: x.src, zh: x.zh, t: x.t }));   // 留一份旧的，以防万一
+    s.segments = segs; markDirty(s); renderSide(); renderMain();
+    toast('完成：整理成 ' + segs.length + ' 句完整的字幕', 5000);
+  }catch(e){ toast('没完成：' + e.message, 6000); }
+  finally{ delete s.rebuilding; }
 };
 
 /* ================= 选中英文单词看中文意思 ================= */
