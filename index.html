@@ -1328,6 +1328,7 @@ async function groqTranscribe(wav, s, ck, extraPrompt){
     if (!w.length) return true;
     if (w.length > 7) return false;
     if (g.avg_logprob < -0.95) return true;          // 很短又很没把握：多半是噪音里“听”出来的
+    if (w.length <= 5 && g.avg_logprob < -0.8) return true;   // 例如安静时冒出来的 “and innovation.”
     if (g.avg_logprob > -0.7) return false;
     if (recent.some(r => r === t || (t.length > 8 && r.endsWith(t)))) return true;
     const long = w.filter(x => x.length > 2);
@@ -2044,7 +2045,8 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
       if (tt !== (s.title || '').trim()){ s.title = tt; ch = true; }
     }
     const n = s.segments.length;
-    s.segments = s.segments.filter(x => !/^\s*(🎙|⏳)\s*(\d+\s*秒|正在听|识别中)/.test(x.src || ''));
+    s.segments = s.segments.filter(x => !/^\s*(🎙|⏳)\s*(\d+\s*秒|正在听|识别中)/.test(x.src || '') &&
+      !(x.conf !== undefined && x.conf < -0.95 && !x.fixed && (x.src || '').split(/\s+/).filter(Boolean).length <= 7));
     if (s.segments.length !== n) ch = true;
     if (ch) await DB.put(s);
   }
