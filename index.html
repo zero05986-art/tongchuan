@@ -1110,27 +1110,46 @@ const VADP = {
 };
 // 选麦克风：Mac 会把附近的 iPhone 当成默认麦克风（连续互通），这里自动避开手机，优先用电脑/平板自带的
 const PHONE_MIC = /iphone|ipad|continuity|连续互通|手机/i;
+// 选麦克风：永远用“具体的设备”打开，而不是“系统默认”。
+// 原因：Mac 会在 iPhone 靠近时把系统默认输入自动切到 iPhone，浏览器跟着默认走就会中途换成手机麦克风。
+const BAD_MIC = /virtual|teams|zoom|blackhole|soundflower|loopback|aggregate|聚集/i;
+const isIPadHost = /iPad/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isPhoneMic = l => isIPadHost ? /iphone|continuity|连续互通|手机/i.test(l) : PHONE_MIC.test(l);
+async function pickMic(md){
+  const all = (await md.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+  const ok = all.filter(d => !isPhoneMic(d.label) && !BAD_MIC.test(d.label));
+  if (settings.micId){ const m = ok.find(d => d.deviceId === settings.micId); if (m) return m; }
+  return ok.find(d => /macbook|imac|built-?in|internal|内建|内置|ipad/i.test(d.label)) || ok[0] || null;
+}
 async function openMic(){
   const base = { echoCancellation:false, noiseSuppression:true, autoGainControl:true, channelCount:1 };
   const md = navigator.mediaDevices;
-  if (settings.micId){
-    try{ return await md.getUserMedia({ audio: Object.assign({ deviceId:{ exact: settings.micId } }, base) }); }catch(e){}
-  }
-  let st = await md.getUserMedia({ audio: base });
+  let st = null;
+  // 已经授权过（能看到设备名字）就直接打开选中的麦克风，连一下手机都不碰；第一次用才先拿权限
+  let granted = false;
+  try{ granted = (await md.enumerateDevices()).some(d => d.kind === 'audioinput' && d.label); }catch(e){}
+  if (!granted){ try{ st = await md.getUserMedia({ audio: base }); }catch(e){ if (!settings.micId) throw e; } }
   try{
-    const tr = st.getAudioTracks()[0], label = (tr && tr.label) || '';
-    if (PHONE_MIC.test(label)){
-      const devs = (await md.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications' && !PHONE_MIC.test(d.label) && !/virtual|teams|zoom|blackhole|soundflower|loopback/i.test(d.label));
-      const pick = devs.find(d => /macbook|built-?in|内建|内置|ipad/i.test(d.label) && !/iphone/i.test(d.label)) || devs[0];
-      if (pick){
-        st.getTracks().forEach(t => t.stop());
-        st = await md.getUserMedia({ audio: Object.assign({ deviceId:{ exact: pick.deviceId } }, base) });
-        toast('已改用「' + pick.label + '」，不用手机麦克风', 3000);
-      }
+    const pick = await pickMic(md);
+    const cur = st && st.getAudioTracks()[0];
+    const curId = cur && cur.getSettings ? cur.getSettings().deviceId : '';
+    if (pick && (!cur || curId !== pick.deviceId || curId === 'default')){
+      const st2 = await md.getUserMedia({ audio: Object.assign({ deviceId:{ exact: pick.deviceId } }, base) });
+      if (st) st.getTracks().forEach(t => t.stop());
+      st = st2;
     }
-  }catch(e){}
+  }catch(e){ console.warn('选麦克风失败', e); }
+  if (!st) st = await md.getUserMedia({ audio: base });
+  const tr = st.getAudioTracks()[0], label = (tr && tr.label) || '';
+  if (isPhoneMic(label)) toast('只找到手机麦克风：' + label + '。可以在 设置 → 麦克风 里换一个', 5000);
+  else if (label) toast('麦克风：' + label.replace(/^(默认|Default)\s*-\s*/i, ''), 2200);
   return st;
 }
+// 录音中如果插拔/靠近手机导致设备变化，确认还在用原来的麦克风
+try{ navigator.mediaDevices && navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener('devicechange', () => {
+  const tr = wMic && wMic.getAudioTracks()[0];
+  if (tr && (tr.readyState === 'ended' || isPhoneMic(tr.label)) && recId){ const id = recId; toast('麦克风变了，正在换回电脑麦克风…', 2500); stopRec(); setTimeout(() => startRec4(id), 600); }
+}); }catch(e){}
 function startWhisper(sid){
   wSid = sid; wCarry = ''; wCtx = '';
   try{ wAc = new (window.AudioContext || window.webkitAudioContext)(); wAc.resume && wAc.resume(); }catch(e){}
@@ -1300,7 +1319,21 @@ async function groqTranscribe(wav, s, ck, extraPrompt){
   const j = await r.json();
   if (!Array.isArray(j.segments)) return j.text || '';
   // 去掉 Whisper 认为“没人说话”或明显瞎编的小段
-  const keep = j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2);
+  // 还要去掉“幻听”：声音很弱时，Whisper 会把提示词或刚才说过的话再编一遍（例如反复出现 “and the global economy.”）
+  const norm = t => (t || '').toLowerCase().replace(/[^a-z0-9\u00c0-\u024f\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const hintW = new Set(norm(hint).split(' ').filter(w => w.length > 2));
+  const recent = (s.segments || []).slice(-10).map(x => norm(x.src));
+  const echo = g => {
+    const t = norm(g.text), w = t.split(' ').filter(Boolean);
+    if (!w.length) return true;
+    if (w.length > 7) return false;
+    if (g.avg_logprob < -0.95) return true;          // 很短又很没把握：多半是噪音里“听”出来的
+    if (g.avg_logprob > -0.7) return false;
+    if (recent.some(r => r === t || (t.length > 8 && r.endsWith(t)))) return true;
+    const long = w.filter(x => x.length > 2);
+    return long.length > 0 && long.filter(x => hintW.has(x)).length / long.length >= 0.5;
+  };
+  const keep = j.segments.filter(g => !(g.no_speech_prob > 0.6 && g.avg_logprob < -0.8) && !(g.compression_ratio > 2.4) && g.avg_logprob > -1.2 && !echo(g));
   if (ck && keep.length) ck.conf = Math.min(...keep.map(g => g.avg_logprob));
   let out = keep.map(g => g.text).join(' ').replace(/\s+/g, ' ').trim();
   // 英文课却识别出了中文（多半是旁边有人说中文或噪音），把中文部分去掉
