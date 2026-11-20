@@ -1154,7 +1154,7 @@ try{ navigator.mediaDevices && navigator.mediaDevices.addEventListener && naviga
   if (tr && (tr.readyState === 'ended' || isPhoneMic(tr.label)) && recId){ const id = recId; toast('麦克风变了，正在换回电脑麦克风…', 2500); stopRec(); setTimeout(() => startRec4(id), 600); }
 }); }catch(e){}
 function startWhisper(sid){
-  wSid = sid; wCarry = ''; wCtx = '';
+  wSid = sid; wCarry = ''; wCtx = ''; wLoud = [];
   try{ wAc = new (window.AudioContext || window.webkitAudioContext)(); wAc.resume && wAc.resume(); }catch(e){}
   openMic().then(stream => {
     if (!wantRun || recId !== sid){ stream.getTracks().forEach(t => t.stop()); return; }
@@ -1238,6 +1238,7 @@ function wavOf(chunks){
 const HALLU = /thank you for watching|thanks for watching|please subscribe|like and subscribe|subtitles by|ご視聴ありがとうございました|チャンネル登録/i;
 // 识别结果先拼成完整句子再翻译：没说完的半句（结尾没有句号/问号）先挂在字幕区，等下一段接上再一起翻
 let wCarry = '', wCtx = '', wCarryTimer = null, wCarryAu = [], wCarryConf = 0;
+let wLoud = [];   // 最近确实识别出老师讲话的那些录音段的音量，用来判断“现在是不是根本没人在讲”
 const SENT_END = /[.!?。！？…]["'”’)]?$/;
 function wEmit(text, sid, au, conf){ wCtx = (wCtx + ' ' + text).slice(-300); addFinal(text, sid, { au, conf }); }
 // 两段交界处偶尔会重复几个词，去掉重复的开头
@@ -1271,10 +1272,19 @@ function flushWhisper(frames, force){
   const sid = wSid, s = getS(sid); if (!s) return;
   const sp = frames.reduce((t, f) => t + (f.sp ? f.y.length / 16 : 0), 0);   // 其中“像在说话”的时长（毫秒）
   if (sp < 400 && !force) return;
-  const pcm = frames.map(f => f.y), wav = wavOf(pcm); wPending++;
+  const pcm = frames.map(f => f.y);
   // 把这段录音存下来（课后可以导出录音，也能在“校对”时重新听）
   const ck = { id: uid(), conf: null };
   DB.audPut({ k: sid + '|' + ck.id, sid, id: ck.id, t: Date.now(), mu: muEncode(pcm) });
+  // 音量比老师平时讲课小一大截（安静做题、远处窃窃私语）：不送去识别。
+  // 否则 Whisper 会对着“几乎没声音”编出整句话（例如 “M. Q. What is the most important thing in your life?”）
+  let sq = 0, n = 0; pcm.forEach(c => { for (let i = 0; i < c.length; i += 2){ sq += c[i] * c[i]; n++; } });
+  ck.rms = Math.sqrt(sq / Math.max(1, n));
+  if (wLoud.length >= 5 && !force){
+    const med = wLoud.slice().sort((a, b) => a - b)[wLoud.length >> 1];
+    if (ck.rms < med * 0.5){ if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim(wCarry ? wCarry + ' …' : '🎙 正在听…'); return; }
+  }
+  const wav = wavOf(pcm); wPending++;
   if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim((wCarry ? wCarry + ' ' : '') + '⏳');
   const tryAsr = async () => {
     for (let a = 0; ; a++){
@@ -1289,7 +1299,10 @@ function flushWhisper(frames, force){
   wChain = wChain.then(tryAsr).then(text => {
     wPending--;
     text = (text || '').trim();
-    if (text && !HALLU.test(text) && !/^(you|thank you|thanks|bye|okay|ok|so|um|uh)[.!?]?$/i.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2) wTake(text, sid, force, ck);
+    if (text && !HALLU.test(text) && !/^(you|thank you|thanks|bye|okay|ok|so|um|uh)[.!?]?$/i.test(text) && text.replace(/[\s.,!?。、]/g, '').length >= 2){
+      if (ck.conf != null && ck.conf > -0.6){ wLoud.push(ck.rms); if (wLoud.length > 40) wLoud.shift(); }
+      wTake(text, sid, force, ck);
+    }
     else if (force && wCarry){ wTake('', sid, true); }
     if (recId === sid && !(wSeg && wSeg.some(f => f.sp))) setInterim(wCarry ? wCarry + ' …' : (wPending ? '⏳ 识别中…' : '🎙 正在听…'));
   }, e => {
@@ -1339,9 +1352,10 @@ async function groqTranscribe(wav, s, ck, extraPrompt){
   const echo = g => {
     const t = norm(g.text), w = t.split(' ').filter(Boolean);
     if (!w.length) return true;
+    if (/^\s*([A-Z]\.\s*){2,}/.test(g.text)) return true;     // “M. Q. …” 这种把课程名拆成字母念出来的，都是编的
     if (w.length > 7) return false;
     // 长句被切开时，后半截可能很短、把握也不高——这时候不能丢（正在接半句、或者这段录音里还有别的话）
-    if (wCarry || j.segments.length > 1) return recent.some(r => r === t);
+    if (wCarry || j.segments.length > 1) return g.avg_logprob < -0.95 || recent.some(r => r === t);
     if (g.avg_logprob < -0.95) return true;          // 很短又很没把握：多半是噪音里“听”出来的
     if (w.length <= 5 && g.avg_logprob < -0.8) return true;   // 例如安静时冒出来的 “and innovation.”
     if (g.avg_logprob > -0.7) return false;
@@ -2199,7 +2213,8 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
     }
     const n = s.segments.length;
     s.segments = s.segments.filter(x => !/^\s*(🎙|⏳)\s*(\d+\s*秒|正在听|识别中)/.test(x.src || '') &&
-      !(x.conf !== undefined && x.conf < -0.95 && !x.fixed && (x.src || '').split(/\s+/).filter(Boolean).length <= 7));
+      !(x.conf !== undefined && x.conf < -0.95 && !x.fixed && (x.src || '').split(/\s+/).filter(Boolean).length <= 7) &&
+      !(x.conf !== undefined && !x.fixed && /^\s*([A-Z]\.\s*){2,}/.test(x.src || '')));
     if (s.segments.length !== n) ch = true;
     if (ch) await DB.put(s);
   }
